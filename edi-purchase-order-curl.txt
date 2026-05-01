@@ -1,0 +1,23 @@
+Sample EDI Purchase Order curl commands
+
+1) Send a raw ANSI X12 850 Purchase Order to the API
+
+curl -X POST http://localhost:80/api/edi \
+  -H 'Content-Type: text/plain' \
+  --data-binary @sample-850.edi
+
+2) Inline sample 850 payload
+
+curl -X POST http://localhost:80/api/edi \
+  -H 'Content-Type: text/plain' \
+  --data-binary $'ISA*00*          *00*          *ZZ*COFFEESHOP     *ZZ*SERMACROPS     *260501*0900*^*00501*000000101*0*P*:~GS*PO*COFFEESHOP*SERMACROPS*20260501*0900*101*X*005010~ST*850*000000101~BEG*00*NE*PO10003**20260501~DTM*002*20260501~PO1*1*500*LB*5.00*PE*VP*COFFEE001~PO1*2*250*LB*4.75*PE*VP*COFFEE002~CTT*2~SE*6*000000101~GE*1*101~IEA*1*000000101~'
+
+3) Simulate an inbound 850 from the Coffee Shop using the built-in simulator
+
+curl -X POST http://localhost:80/api/edi/simulate/850 \
+  -H 'Content-Type: application/json' \
+  -d '{"partnerId":"COFFEESHOP","items":[{"lineNumber":1,"productId":"COFFEE001","description":"Green Coffee Beans","quantity":500,"unitPrice":5,"uom":"LB"}]}'
+
+4) Check resulting transactions
+
+curl http://localhost:80/api/transactions
