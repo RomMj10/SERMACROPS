@@ -86,10 +86,10 @@ export async function handle850(parsed: ParsedEdiDocument, transactionId: number
 
   await sendToParter("855", parsed.senderId, edi855);
 
-  const rawMaterialsPartner = Object.values(PARTNERS).find((p) => p.type === "supplier");
-  if (rawMaterialsPartner) {
+  const supplierPartner = Object.values(PARTNERS).find((p) => p.type === "supplier");
+  if (supplierPartner) {
     const cn850 = String(transactionId + 2000).padStart(9, "0");
-    const edi850Out = generateEdi("850", SERMACROPS_ID, rawMaterialsPartner.ediId, cn850, {
+    const edi850Out = generateEdi("850", SERMACROPS_ID, supplierPartner.ediId, cn850, {
       poNumber: `SPO${cn}`,
       items: summary.lineItems?.map((item) => ({
         productId: item.productId,
@@ -102,20 +102,20 @@ export async function handle850(parsed: ParsedEdiDocument, transactionId: number
     await db.insert(purchaseOrdersTable).values({
       poNumber: `SPO${cn}`,
       direction: "outbound",
-      partnerId: rawMaterialsPartner.id,
-      partnerName: rawMaterialsPartner.name,
+      partnerId: supplierPartner.id,
+      partnerName: supplierPartner.name,
       status: "pending",
       totalAmount: "0",
       currency: "USD",
       items: summary.lineItems || [],
     }).onConflictDoNothing();
 
-    await recordOutbound("850", rawMaterialsPartner.id, rawMaterialsPartner.name, cn850, edi850Out, {
+    await recordOutbound("850", supplierPartner.id, supplierPartner.name, cn850, edi850Out, {
       poNumber: `SPO${cn}`,
     });
-    await sendToParter("850", rawMaterialsPartner.id, edi850Out);
+    await sendToParter("850", supplierPartner.id, edi850Out);
 
-    log.info("EDI 850 sent to raw materials supplier");
+    log.info("EDI 850 sent to supplier partner");
   }
 }
 
