@@ -22,6 +22,7 @@ const EDI_TYPES: Record<string, string> = {
 export default function TransactionsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [processedIds, setProcessedIds] = useState<Set<number>>(new Set());
   
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -36,6 +37,7 @@ export default function TransactionsPage() {
   const handleProcess = (id: number) => {
     processMutation.mutate({ id }, {
       onSuccess: () => {
+        setProcessedIds((current) => new Set(current).add(id));
         toast({
           title: "Transaction Processed",
           description: `Transaction ${id} has been manually processed.`,
@@ -173,7 +175,7 @@ export default function TransactionsPage() {
                         variant="secondary"
                         className="opacity-0 group-hover:opacity-100 transition-opacity bg-primary/20 text-primary hover:bg-primary/30"
                         onClick={() => handleProcess(tx.id)}
-                        disabled={processMutation.isPending || tx.transactionType === "850"}
+                        disabled={processMutation.isPending || processedIds.has(tx.id)}
                       >
                         <Play className="h-3 w-3 mr-2" />
                         Process
