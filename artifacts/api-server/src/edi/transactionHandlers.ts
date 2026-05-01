@@ -56,35 +56,42 @@ export async function handle850(parsed: ParsedEdiDocument, transactionId: number
   };
 
   const cn = String(transactionId + 1000).padStart(9, "0");
+  const isCoffeeShop = parsed.senderId === "COFFEESHOP";
 
   await db.insert(purchaseOrdersTable).values({
     poNumber: summary.purchaseOrderNumber || `PO${cn}`,
     direction: "inbound",
     partnerId: parsed.senderId,
     partnerName: PARTNERS[parsed.senderId]?.name || parsed.senderId,
-    status: "pending",
+    status: isCoffeeShop ? "pending" : "acknowledged",
     totalAmount: summary.totalAmount || "0",
     currency: "USD",
     items: summary.lineItems || [],
   }).onConflictDoNothing();
 
   await db.update(transactionsTable)
-    .set({ status: "processed", updatedAt: new Date() })
+    .set({ status: isCoffeeShop ? "pending" : "processed", updatedAt: new Date() })
     .where(eq(transactionsTable.id, transactionId));
 
-  log.info("EDI 850 processed — PO created");
+  if (isCoffeeShop) {
+    log.info("EDI 850 received from Coffee Shop — pending user verification");
+  } else {
+    log.info("EDI 850 processed — PO created");
+  }
 
-  const edi855 = generateEdi("855", SERMACROPS_ID, parsed.senderId, cn, {
-    purchaseOrderNumber: summary.purchaseOrderNumber,
-    acknowledgeCode: "AC",
-  });
+  if (!isCoffeeShop) {
+    const edi855 = generateEdi("855", SERMACROPS_ID, parsed.senderId, cn, {
+      purchaseOrderNumber: summary.purchaseOrderNumber,
+      acknowledgeCode: "AC",
+    });
 
-  await recordOutbound("855", parsed.senderId, PARTNERS[parsed.senderId]?.name || parsed.senderId, cn, edi855, {
-    purchaseOrderNumber: summary.purchaseOrderNumber,
-    acknowledgeCode: "AC",
-  });
+    await recordOutbound("855", parsed.senderId, PARTNERS[parsed.senderId]?.name || parsed.senderId, cn, edi855, {
+      purchaseOrderNumber: summary.purchaseOrderNumber,
+      acknowledgeCode: "AC",
+    });
 
-  await sendToParter("855", parsed.senderId, edi855);
+    await sendToParter("855", parsed.senderId, edi855);
+  }
 
   const rawMaterialsPartner = Object.values(PARTNERS).find((p) => p.type === "supplier");
   if (rawMaterialsPartner) {
@@ -104,7 +111,7 @@ export async function handle850(parsed: ParsedEdiDocument, transactionId: number
       direction: "outbound",
       partnerId: rawMaterialsPartner.id,
       partnerName: rawMaterialsPartner.name,
-      status: "pending",
+      status: "acknowledged",
       totalAmount: "0",
       currency: "USD",
       items: summary.lineItems || [],

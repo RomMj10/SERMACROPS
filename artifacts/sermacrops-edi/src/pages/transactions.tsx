@@ -173,7 +173,7 @@ export default function TransactionsPage() {
                         variant="secondary"
                         className="opacity-0 group-hover:opacity-100 transition-opacity bg-primary/20 text-primary hover:bg-primary/30"
                         onClick={() => handleProcess(tx.id)}
-                        disabled={processMutation.isPending}
+                        disabled={processMutation.isPending || tx.transactionType === "850"}
                       >
                         <Play className="h-3 w-3 mr-2" />
                         Process
