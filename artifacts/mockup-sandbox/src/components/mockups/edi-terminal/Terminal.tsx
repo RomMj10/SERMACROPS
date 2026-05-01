@@ -17,7 +17,7 @@ export function Terminal() {
     {
       poNumber: "SP0000001012",
       direction: "Outbound",
-      partner: "RawMat Supply Co. / RAWMATSUPPLY",
+      partner: "PhilHarvest / PHILHARVEST",
       shipDate: "TBD",
       amount: "$0.00",
       status: "pending",
@@ -35,7 +35,7 @@ export function Terminal() {
     {
       poNumber: "SP0000000101",
       direction: "Outbound",
-      partner: "RawMat Supply Co.",
+      partner: "PhilHarvest",
       shipDate: "5/3/2026",
       amount: "$1,312.50",
       status: "invoiced",

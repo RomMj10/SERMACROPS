@@ -10,9 +10,9 @@ const navItems = [
 ];
 
 const rows = [
-  { po: "SP0000001012", dir: "outbound", partnerName: "RawMat Supply Co.", partnerId: "RAWMATSUPPLY", ship: "TBD", amount: "$0.00", status: "pending", created: "5/1/2026" },
+  { po: "SP0000001012", dir: "outbound", partnerName: "PhilHarvest", partnerId: "PHILHARVEST", ship: "TBD", amount: "$0.00", status: "pending", created: "5/1/2026" },
   { po: "PO10001", dir: "inbound", partnerName: "The Coffee Shop", partnerId: "COFFEESHOP", ship: "5/5/2026", amount: "$2,500.00", status: "completed", created: "5/1/2026" },
-  { po: "SP0000000101", dir: "outbound", partnerName: "RawMat Supply Co.", partnerId: "RAWMATSUPPLY", ship: "5/3/2026", amount: "$1,312.50", status: "invoiced", created: "5/1/2026" },
+  { po: "SP0000000101", dir: "outbound", partnerName: "PhilHarvest", partnerId: "PHILHARVEST", ship: "5/3/2026", amount: "$1,312.50", status: "invoiced", created: "5/1/2026" },
   { po: "PO10002", dir: "inbound", partnerName: "The Coffee Shop", partnerId: "COFFEESHOP", ship: "5/8/2026", amount: "$2,000.00", status: "pending", created: "5/1/2026" },
 ];
 
