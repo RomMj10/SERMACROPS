@@ -19,12 +19,12 @@ export const PARTNERS: Record<string, PartnerConfig> = {
     isActive: true,
   },
   RAWMATSUPPLY: {
-    id: "PHILHARVEST",
-    name: "Philharvest Co.",
+    id: "RAWMATSUPPLY",
+    name: "RawMat Supply Co.",
     type: "supplier",
-    ediId: "PHILHARVEST",
-    as2Id: "PHV-AS2",
-    endpointUrl: "https://mock-partner.sermacrops/as2/philharvest",
+    ediId: "RAWMATSUPPLY",
+    as2Id: "RAWMAT-AS2",
+    endpointUrl: "https://mock-partner.sermacrops/as2/rawmat",
     isActive: true,
   },
   FASTLOGISTICS: {
