@@ -1,0 +1,140 @@
+You are a senior backend engineer tasked with designing a system for a manufacturing company named SERMACROPS and implement a working Electronic Data Interchange (EDI) system for a manufacturing company.
+
+## 📌 System Overview
+Build a complete Node.js-based EDI system that:
+- Uses ANSI X12 format for all EDI documents
+- Uses AS2 protocol for secure transmission of EDI messages
+- Simulates real-world supply chain communication between:
+  - Coffee Shop (Client)
+  - Raw Materials Supplier
+  - Logistics Provider
+
+## 📌 Core Requirements
+
+### 1. Tech Stack
+Follows the MERN stack (MongoDB, Express.js, React, and Node.js)
+- Node.js (Express.js for API)
+- AS2 communication (use libraries or simulate if needed)
+- ANSI X12 parsing and generation (use npm libraries or custom parser)
+- Axios or similar for HTTP communication
+- Environment-based configuration (.env)
+- Docker support (optional)
+- MongoDB for storing transactions, and inventory
+
+---
+
+### 2. EDI Transactions to Support
+
+#### From Coffee Shop → SERMACROPS
+- EDI 850 (Purchase Order)
+
+#### From SERMACROPS → Coffee Shop
+- EDI 855 (Purchase Order Acknowledgment)
+- EDI 856 (Advance Ship Notice)
+- EDI 810 (Invoice)
+
+#### From SERMACROPS → Raw Materials Supplier
+- EDI 850 (Purchase Order)
+
+#### From Raw Materials Supplier → SERMACROPS
+- EDI 855 (PO Acknowledgment)
+- EDI 856 (ASN)
+- EDI 810 (Invoice)
+
+#### From SERMACROPS → Logistics Provider
+- EDI 204 (Motor Carrier Load Tender)
+
+#### From Logistics Provider → SERMACROPS
+- EDI 990 (Response to Load Tender)
+
+---
+
+### 3. API Design
+
+All inbound EDI documents should be received via:
+POST https://api.sermacrops/edi
+Requirements:
+- Accept raw EDI (ANSI X12) payloads
+- Identify transaction type (e.g., 850, 855, etc.)
+- Parse and validate structure
+- Route to appropriate handler
+
+---
+
+### 4. System Architecture
+
+Design modular components:
+- `AS2Client` → Handles sending/receiving AS2 messages
+- `EDIParser` → Converts ANSI X12 ↔ JSON
+- `TransactionHandlers` → One handler per EDI type
+- `Router` → Directs incoming EDI to correct handler
+- `Logger` → Logs all transactions
+- `Config Manager` → Handles partner settings (IDs, URLs, certs)
+
+---
+
+### 5. Functional Flow
+
+Example:
+1. Coffee Shop sends EDI 850
+2. When verified/ accepted manually, System parses PO
+3. System responds with EDI 855
+4. System generates EDI 850 to Raw Materials Supplier
+5. Supplier responds with 855, 856, 810
+6. System processes incoming supplier documents
+7. System sends 204 to Logistics
+8. Logistics responds with 990
+9. System sends ASN (856) and Invoice (810) to Coffee Shop
+
+---
+
+### 6. Implementation Requirements
+
+- Provide working Node.js code (not pseudocode)
+- Include:
+  - Project folder structure
+  - Key source files
+  - Sample EDI documents (850, 855, 856, 810, 204, 990)
+  - Parsing + generation logic
+- Simulate external partners using mock endpoints if needed
+- Include error handling for:
+  - Invalid EDI format
+  - Missing segments
+  - Network failures
+- Dashboard created in React showing the inventory, pending POs and transaction history
+
+---
+
+### 7. Security
+- Simulate AS2 encryption/signing (or implement if possible)
+- Validate sender/receiver IDs
+- Log message integrity status
+
+---
+
+### 8. Testing
+- Provide sample requests (Postman or curl)
+- Show full transaction cycle working
+- Include at least one end-to-end flow demo
+
+---
+
+### 9. Bonus (Optional but Preferred)
+
+- Dockerize the system (OPTIONAL)
+- Add retry mechanism for failed transmissions
+- Add message queue (e.g., BullMQ or RabbitMQ)
+- Persist transactions in a database (MongoDB)
+---
+
+## 📌 Output Format
+
+Return:
+1. System architecture explanation
+2. Folder structure
+3. Full implementation code
+4. Sample EDI payloads
+5. Step-by-step instructions to run the system
+6. Example API calls and responses
+
+Ensure the system is realistic, modular, and extensible.

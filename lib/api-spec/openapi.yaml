@@ -3,20 +3,31 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: SERMACROPS EDI System API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: transactions
+    description: EDI transaction management
+  - name: inventory
+    description: Inventory management
+  - name: purchase-orders
+    description: Purchase order management
+  - name: partners
+    description: Trading partner management
+  - name: edi
+    description: EDI document handling
+  - name: dashboard
+    description: Dashboard summaries
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +35,288 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /edi:
+    post:
+      operationId: receiveEdiDocument
+      tags: [edi]
+      summary: Receive raw EDI document
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        "200":
+          description: EDI document processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EdiProcessResult"
+        "400":
+          description: Invalid EDI document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /edi/simulate/{transactionType}:
+    post:
+      operationId: simulateEdiTransaction
+      tags: [edi]
+      summary: Simulate an EDI transaction from a partner
+      parameters:
+        - name: transactionType
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [850, 855, 856, 810, 204, 990]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SimulateEdiRequest"
+      responses:
+        "200":
+          description: Transaction simulated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EdiProcessResult"
+
+  /transactions:
+    get:
+      operationId: listTransactions
+      tags: [transactions]
+      summary: List all EDI transactions
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: partnerId
+          in: query
+          schema:
+            type: string
+        - name: transactionType
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, processed, acknowledged, failed]
+      responses:
+        "200":
+          description: List of transactions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionList"
+
+  /transactions/{id}:
+    get:
+      operationId: getTransaction
+      tags: [transactions]
+      summary: Get a specific transaction
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Transaction details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transaction"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /transactions/{id}/process:
+    post:
+      operationId: processTransaction
+      tags: [transactions]
+      summary: Manually process/acknowledge a pending transaction
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Transaction processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EdiProcessResult"
+
+  /purchase-orders:
+    get:
+      operationId: listPurchaseOrders
+      tags: [purchase-orders]
+      summary: List all purchase orders
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, acknowledged, shipped, invoiced, completed, cancelled]
+        - name: partnerId
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of purchase orders
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PurchaseOrderList"
+
+  /purchase-orders/{id}:
+    get:
+      operationId: getPurchaseOrder
+      tags: [purchase-orders]
+      summary: Get a purchase order by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Purchase order details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PurchaseOrder"
+
+  /inventory:
+    get:
+      operationId: listInventory
+      tags: [inventory]
+      summary: List all inventory items
+      responses:
+        "200":
+          description: Inventory list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryList"
+
+  /inventory/{id}:
+    get:
+      operationId: getInventoryItem
+      tags: [inventory]
+      summary: Get inventory item
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Inventory item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryItem"
+    patch:
+      operationId: updateInventoryItem
+      tags: [inventory]
+      summary: Update inventory item quantity
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateInventoryBody"
+      responses:
+        "200":
+          description: Updated inventory item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryItem"
+
+  /partners:
+    get:
+      operationId: listPartners
+      tags: [partners]
+      summary: List all trading partners
+      responses:
+        "200":
+          description: List of partners
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartnerList"
+
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Get dashboard summary statistics
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+
+  /dashboard/transaction-stats:
+    get:
+      operationId: getTransactionStats
+      tags: [dashboard]
+      summary: Get transaction type breakdown
+      responses:
+        "200":
+          description: Transaction stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionStats"
+
+  /dashboard/recent-activity:
+    get:
+      operationId: getRecentActivity
+      tags: [dashboard]
+      summary: Get recent transaction activity
+      responses:
+        "200":
+          description: Recent activity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecentActivity"
+
 components:
   schemas:
     HealthStatus:
@@ -31,6 +324,317 @@ components:
       properties:
         status:
           type: string
-      required:
-        - status
+      required: [status]
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required: [error, message]
+
+    EdiProcessResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        transactionId:
+          type: integer
+        transactionType:
+          type: string
+        partnerId:
+          type: string
+        message:
+          type: string
+        responseEdi:
+          type: string
+      required: [success, message]
+
+    SimulateEdiRequest:
+      type: object
+      properties:
+        partnerId:
+          type: string
+        referenceNumber:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EdiLineItem"
+      required: [partnerId]
+
+    EdiLineItem:
+      type: object
+      properties:
+        lineNumber:
+          type: integer
+        productId:
+          type: string
+        description:
+          type: string
+        quantity:
+          type: number
+        unitPrice:
+          type: number
+        uom:
+          type: string
+      required: [lineNumber, productId, quantity]
+
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: integer
+        transactionType:
+          type: string
+        direction:
+          type: string
+          enum: [inbound, outbound]
+        partnerId:
+          type: string
+        partnerName:
+          type: string
+        controlNumber:
+          type: string
+        status:
+          type: string
+          enum: [pending, processed, acknowledged, failed]
+        integrityStatus:
+          type: string
+          enum: [valid, invalid, unknown]
+        rawEdi:
+          type: string
+        parsedJson:
+          type: object
+        errorMessage:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, transactionType, direction, partnerId, controlNumber, status, createdAt]
+
+    TransactionList:
+      type: object
+      properties:
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Transaction"
+        total:
+          type: integer
+      required: [transactions, total]
+
+    PurchaseOrder:
+      type: object
+      properties:
+        id:
+          type: integer
+        poNumber:
+          type: string
+        direction:
+          type: string
+          enum: [inbound, outbound]
+        partnerId:
+          type: string
+        partnerName:
+          type: string
+        status:
+          type: string
+          enum: [pending, acknowledged, shipped, invoiced, completed, cancelled]
+        totalAmount:
+          type: number
+        currency:
+          type: string
+        shipDate:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EdiLineItem"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, poNumber, direction, partnerId, status, createdAt]
+
+    PurchaseOrderList:
+      type: object
+      properties:
+        purchaseOrders:
+          type: array
+          items:
+            $ref: "#/components/schemas/PurchaseOrder"
+        total:
+          type: integer
+      required: [purchaseOrders, total]
+
+    InventoryItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        productId:
+          type: string
+        productName:
+          type: string
+        category:
+          type: string
+        quantityOnHand:
+          type: number
+        quantityReserved:
+          type: number
+        quantityAvailable:
+          type: number
+        reorderPoint:
+          type: number
+        unitOfMeasure:
+          type: string
+        unitCost:
+          type: number
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, productId, productName, quantityOnHand, quantityAvailable, updatedAt]
+
+    InventoryList:
+      type: object
+      properties:
+        inventory:
+          type: array
+          items:
+            $ref: "#/components/schemas/InventoryItem"
+        total:
+          type: integer
+      required: [inventory, total]
+
+    UpdateInventoryBody:
+      type: object
+      properties:
+        quantityOnHand:
+          type: number
+        quantityReserved:
+          type: number
+      required: []
+
+    Partner:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum: [client, supplier, logistics]
+        ediId:
+          type: string
+        as2Id:
+          type: string
+        endpointUrl:
+          type: string
+        isActive:
+          type: boolean
+      required: [id, name, type, ediId, isActive]
+
+    PartnerList:
+      type: object
+      properties:
+        partners:
+          type: array
+          items:
+            $ref: "#/components/schemas/Partner"
+      required: [partners]
+
+    DashboardSummary:
+      type: object
+      properties:
+        totalTransactions:
+          type: integer
+        pendingTransactions:
+          type: integer
+        pendingPurchaseOrders:
+          type: integer
+        totalInventoryItems:
+          type: integer
+        lowStockItems:
+          type: integer
+        activePartners:
+          type: integer
+        transactionsToday:
+          type: integer
+        failedTransactions:
+          type: integer
+      required: [totalTransactions, pendingTransactions, pendingPurchaseOrders, totalInventoryItems, lowStockItems, activePartners]
+
+    TransactionStats:
+      type: object
+      properties:
+        byType:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              count:
+                type: integer
+              label:
+                type: string
+            required: [type, count, label]
+        byStatus:
+          type: array
+          items:
+            type: object
+            properties:
+              status:
+                type: string
+              count:
+                type: integer
+            required: [status, count]
+        byPartner:
+          type: array
+          items:
+            type: object
+            properties:
+              partnerId:
+                type: string
+              partnerName:
+                type: string
+              count:
+                type: integer
+            required: [partnerId, partnerName, count]
+      required: [byType, byStatus, byPartner]
+
+    RecentActivity:
+      type: object
+      properties:
+        activities:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              transactionType:
+                type: string
+              direction:
+                type: string
+              partnerName:
+                type: string
+              status:
+                type: string
+              controlNumber:
+                type: string
+              createdAt:
+                type: string
+                format: date-time
+            required: [id, transactionType, direction, partnerName, status, createdAt]
+      required: [activities]
