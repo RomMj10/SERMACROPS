@@ -1,6 +1,5 @@
-import { db } from "@workspace/db";
-import { transactionsTable, purchaseOrdersTable, inventoryTable } from "@workspace/db";
-import { eq, sql } from "drizzle-orm";
+import { getDb } from "@workspace/db";
+import { ObjectId } from "mongodb";
 import { generateEdi } from "./parser";
 import { createAs2Message, sendAs2Message } from "./as2Client";
 import { logger } from "../lib/logger";
@@ -17,7 +16,9 @@ async function recordOutbound(
   rawEdi: string,
   parsedJson: Record<string, unknown>
 ): Promise<void> {
-  await db.insert(transactionsTable).values({
+  const db = await getDb();
+  const now = new Date();
+  await db.collection("transactions").insertOne({
     transactionType,
     direction: "outbound",
     partnerId,
@@ -27,6 +28,9 @@ async function recordOutbound(
     integrityStatus: "valid",
     rawEdi,
     parsedJson,
+    errorMessage: null,
+    createdAt: now,
+    updatedAt: now,
   });
 }
 
@@ -47,7 +51,7 @@ async function sendToParter(
   }
 }
 
-export async function handle850(parsed: ParsedEdiDocument, transactionId: number): Promise<void> {
+export async function handle850(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
   const log = logger.child({ handler: "850", transactionId });
   const summary = parsed.summary as {
     purchaseOrderNumber?: string;
@@ -55,22 +59,34 @@ export async function handle850(parsed: ParsedEdiDocument, transactionId: number
     totalAmount?: string;
   };
 
-  const cn = String(transactionId + 1000).padStart(9, "0");
+  const cn = transactionId.slice(-9).padStart(9, "0");
 
-  await db.insert(purchaseOrdersTable).values({
-    poNumber: summary.purchaseOrderNumber || `PO${cn}`,
-    direction: "inbound",
-    partnerId: parsed.senderId,
-    partnerName: PARTNERS[parsed.senderId]?.name || parsed.senderId,
-    status: "pending",
-    totalAmount: summary.totalAmount || "0",
-    currency: "USD",
-    items: summary.lineItems || [],
-  }).onConflictDoNothing();
+  const db = await getDb();
+  const poCol = db.collection("purchase_orders");
+  const txCol = db.collection("transactions");
+  const now = new Date();
 
-  await db.update(transactionsTable)
-    .set({ status: "processed", updatedAt: new Date() })
-    .where(eq(transactionsTable.id, transactionId));
+  const poNumber = summary.purchaseOrderNumber || `PO${cn}`;
+  const existing = await poCol.findOne({ poNumber });
+  if (!existing) {
+    await poCol.insertOne({
+      poNumber,
+      direction: "inbound",
+      partnerId: parsed.senderId,
+      partnerName: PARTNERS[parsed.senderId]?.name || parsed.senderId,
+      status: "pending",
+      totalAmount: summary.totalAmount || "0",
+      currency: "USD",
+      items: summary.lineItems || [],
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  await txCol.updateOne(
+    { _id: new ObjectId(transactionId) },
+    { $set: { status: "processed", updatedAt: now } }
+  );
 
   log.info("EDI 850 processed — PO created");
 
@@ -88,7 +104,7 @@ export async function handle850(parsed: ParsedEdiDocument, transactionId: number
 
   const supplierPartner = Object.values(PARTNERS).find((p) => p.type === "supplier");
   if (supplierPartner) {
-    const cn850 = String(transactionId + 2000).padStart(9, "0");
+    const cn850 = `${transactionId.slice(-6)}2000`.padStart(9, "0");
     const edi850Out = generateEdi("850", SERMACROPS_ID, supplierPartner.ediId, cn850, {
       poNumber: `SPO${cn}`,
       items: summary.lineItems?.map((item) => ({
@@ -99,16 +115,21 @@ export async function handle850(parsed: ParsedEdiDocument, transactionId: number
       })) || [],
     });
 
-    await db.insert(purchaseOrdersTable).values({
-      poNumber: `SPO${cn}`,
-      direction: "outbound",
-      partnerId: supplierPartner.id,
-      partnerName: supplierPartner.name,
-      status: "pending",
-      totalAmount: "0",
-      currency: "USD",
-      items: summary.lineItems || [],
-    }).onConflictDoNothing();
+    const spExisting = await poCol.findOne({ poNumber: `SPO${cn}` });
+    if (!spExisting) {
+      await poCol.insertOne({
+        poNumber: `SPO${cn}`,
+        direction: "outbound",
+        partnerId: supplierPartner.id,
+        partnerName: supplierPartner.name,
+        status: "pending",
+        totalAmount: "0",
+        currency: "USD",
+        items: summary.lineItems || [],
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
 
     await recordOutbound("850", supplierPartner.id, supplierPartner.name, cn850, edi850Out, {
       poNumber: `SPO${cn}`,
@@ -119,30 +140,39 @@ export async function handle850(parsed: ParsedEdiDocument, transactionId: number
   }
 }
 
-export async function handle855(parsed: ParsedEdiDocument, transactionId: number): Promise<void> {
+export async function handle855(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
   const log = logger.child({ handler: "855", transactionId });
   const summary = parsed.summary as { purchaseOrderNumber?: string; acknowledgeCode?: string };
 
+  const db = await getDb();
+  const now = new Date();
+
   if (summary.purchaseOrderNumber) {
-    await db.update(purchaseOrdersTable)
-      .set({ status: "acknowledged", updatedAt: new Date() })
-      .where(eq(purchaseOrdersTable.poNumber, summary.purchaseOrderNumber));
+    await db.collection("purchase_orders").updateOne(
+      { poNumber: summary.purchaseOrderNumber },
+      { $set: { status: "acknowledged", updatedAt: now } }
+    );
   }
 
-  await db.update(transactionsTable)
-    .set({ status: "acknowledged", updatedAt: new Date() })
-    .where(eq(transactionsTable.id, transactionId));
+  await db.collection("transactions").updateOne(
+    { _id: new ObjectId(transactionId) },
+    { $set: { status: "acknowledged", updatedAt: now } }
+  );
 
   log.info({ poNumber: summary.purchaseOrderNumber }, "EDI 855 processed — PO acknowledged");
 }
 
-export async function handle856(parsed: ParsedEdiDocument, transactionId: number): Promise<void> {
+export async function handle856(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
   const log = logger.child({ handler: "856", transactionId });
-  const cn = String(transactionId + 3000).padStart(9, "0");
+  const cn = transactionId.slice(-6).padStart(9, "0");
 
-  await db.update(transactionsTable)
-    .set({ status: "processed", updatedAt: new Date() })
-    .where(eq(transactionsTable.id, transactionId));
+  const db = await getDb();
+  const now = new Date();
+
+  await db.collection("transactions").updateOne(
+    { _id: new ObjectId(transactionId) },
+    { $set: { status: "processed", updatedAt: now } }
+  );
 
   const partner = Object.values(PARTNERS).find((p) => p.type === "logistics");
   if (partner) {
@@ -156,38 +186,51 @@ export async function handle856(parsed: ParsedEdiDocument, transactionId: number
   }
 }
 
-export async function handle810(parsed: ParsedEdiDocument, transactionId: number): Promise<void> {
+export async function handle810(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
   const log = logger.child({ handler: "810", transactionId });
   const summary = parsed.summary as { purchaseOrderNumber?: string; invoiceNumber?: string; totalAmount?: string };
 
+  const db = await getDb();
+  const now = new Date();
+
   if (summary.purchaseOrderNumber) {
-    await db.update(purchaseOrdersTable)
-      .set({ status: "invoiced", updatedAt: new Date() })
-      .where(eq(purchaseOrdersTable.poNumber, summary.purchaseOrderNumber));
+    await db.collection("purchase_orders").updateOne(
+      { poNumber: summary.purchaseOrderNumber },
+      { $set: { status: "invoiced", updatedAt: now } }
+    );
   }
 
-  await db.update(transactionsTable)
-    .set({ status: "processed", updatedAt: new Date() })
-    .where(eq(transactionsTable.id, transactionId));
+  await db.collection("transactions").updateOne(
+    { _id: new ObjectId(transactionId) },
+    { $set: { status: "processed", updatedAt: now } }
+  );
 
   log.info({ invoiceNumber: summary.invoiceNumber }, "EDI 810 processed — invoice recorded");
 }
 
-export async function handle204(parsed: ParsedEdiDocument, transactionId: number): Promise<void> {
+export async function handle204(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
   const log = logger.child({ handler: "204", transactionId });
-  await db.update(transactionsTable)
-    .set({ status: "processed", updatedAt: new Date() })
-    .where(eq(transactionsTable.id, transactionId));
+  const db = await getDb();
+  const now = new Date();
+
+  await db.collection("transactions").updateOne(
+    { _id: new ObjectId(transactionId) },
+    { $set: { status: "processed", updatedAt: now } }
+  );
   log.info("EDI 204 processed — load tender sent");
 }
 
-export async function handle990(parsed: ParsedEdiDocument, transactionId: number): Promise<void> {
+export async function handle990(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
   const log = logger.child({ handler: "990", transactionId });
-  const cn = String(transactionId + 4000).padStart(9, "0");
+  const cn = transactionId.slice(-6).padStart(9, "0");
 
-  await db.update(transactionsTable)
-    .set({ status: "acknowledged", updatedAt: new Date() })
-    .where(eq(transactionsTable.id, transactionId));
+  const db = await getDb();
+  const now = new Date();
+
+  await db.collection("transactions").updateOne(
+    { _id: new ObjectId(transactionId) },
+    { $set: { status: "acknowledged", updatedAt: now } }
+  );
 
   const clientPartner = Object.values(PARTNERS).find((p) => p.type === "client");
   if (clientPartner) {

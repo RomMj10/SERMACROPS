@@ -1,6 +1,4 @@
-import { db } from "@workspace/db";
-import { transactionsTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { getDb } from "@workspace/db";
 import { parseEdi } from "./parser";
 import { PARTNERS } from "./config";
 import { handle850, handle855, handle856, handle810, handle204, handle990 } from "./transactionHandlers";
@@ -8,7 +6,7 @@ import { logger } from "../lib/logger";
 
 export interface EdiRouterResult {
   success: boolean;
-  transactionId?: number;
+  transactionId?: string;
   transactionType?: string;
   partnerId?: string;
   message: string;
@@ -30,7 +28,11 @@ export async function routeEdiDocument(rawEdi: string): Promise<EdiRouterResult>
 
   const partnerName = PARTNERS[parsed.senderId]?.name || parsed.senderId;
 
-  const [inserted] = await db.insert(transactionsTable).values({
+  const db = await getDb();
+  const col = db.collection("transactions");
+
+  const now = new Date();
+  const insertResult = await col.insertOne({
     transactionType: parsed.transactionType,
     direction: "inbound",
     partnerId: parsed.senderId,
@@ -40,9 +42,12 @@ export async function routeEdiDocument(rawEdi: string): Promise<EdiRouterResult>
     integrityStatus: "valid",
     rawEdi,
     parsedJson: { ...parsed.summary, envelope: { senderId: parsed.senderId, receiverId: parsed.receiverId } },
-  }).returning({ id: transactionsTable.id });
+    errorMessage: null,
+    createdAt: now,
+    updatedAt: now,
+  });
 
-  const transactionId = inserted.id;
+  const transactionId = insertResult.insertedId.toHexString();
   logger.info({ transactionId, transactionType: parsed.transactionType, partnerId: parsed.senderId }, "EDI transaction recorded");
 
   try {
@@ -55,9 +60,10 @@ export async function routeEdiDocument(rawEdi: string): Promise<EdiRouterResult>
       case "990": await handle990(parsed, transactionId); break;
       default: {
         logger.warn({ transactionType: parsed.transactionType }, "Unknown transaction type");
-        await db.update(transactionsTable)
-          .set({ status: "failed", errorMessage: `Unsupported transaction type: ${parsed.transactionType}`, updatedAt: new Date() })
-          .where(eq(transactionsTable.id, transactionId));
+        await col.updateOne(
+          { _id: insertResult.insertedId },
+          { $set: { status: "failed", errorMessage: `Unsupported transaction type: ${parsed.transactionType}`, updatedAt: new Date() } }
+        );
         return {
           success: false,
           transactionId,

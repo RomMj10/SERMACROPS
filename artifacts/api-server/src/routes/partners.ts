@@ -1,12 +1,13 @@
 import { Router } from "express";
-import { db } from "@workspace/db";
-import { partnersTable } from "@workspace/db";
+import { getDb } from "@workspace/db";
 
 const router = Router();
 
 router.get("/partners", async (req, res) => {
-  const partners = await db.select().from(partnersTable).orderBy(partnersTable.name);
-  return res.json({ partners });
+  const db = await getDb();
+  const col = db.collection("partners");
+  const partners = await col.find({}).sort({ name: 1 }).toArray();
+  return res.json({ partners: partners.map(({ _id, ...rest }) => rest) });
 });
 
 export default router;

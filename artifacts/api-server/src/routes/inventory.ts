@@ -1,60 +1,60 @@
 import { Router } from "express";
-import { db } from "@workspace/db";
-import { inventoryTable } from "@workspace/db";
-import { eq, sql } from "drizzle-orm";
+import { getDb } from "@workspace/db";
+import { ObjectId } from "mongodb";
 import {
   GetInventoryItemParams,
-  UpdateInventoryItemParams,
   UpdateInventoryItemBody,
 } from "@workspace/api-zod";
 
 const router = Router();
 
+function docToItem(doc: Record<string, unknown>) {
+  const { _id, ...rest } = doc;
+  const base = { ...rest, id: (_id as ObjectId).toHexString() };
+  return {
+    ...base,
+    quantityAvailable: (Number(base.quantityOnHand) - Number(base.quantityReserved)).toFixed(3),
+    quantityOnHand: Number(base.quantityOnHand),
+    quantityReserved: Number(base.quantityReserved),
+    reorderPoint: Number(base.reorderPoint),
+    unitCost: base.unitCost != null ? Number(base.unitCost) : null,
+  };
+}
+
 router.get("/inventory", async (req, res) => {
-  const [inventory, countResult] = await Promise.all([
-    db.select().from(inventoryTable).orderBy(inventoryTable.productName),
-    db.select({ count: sql<number>`count(*)` }).from(inventoryTable),
+  const db = await getDb();
+  const col = db.collection("inventory");
+
+  const [inventory, total] = await Promise.all([
+    col.find({}).sort({ productName: 1 }).toArray(),
+    col.countDocuments(),
   ]);
 
-  const enriched = inventory.map((item) => ({
-    ...item,
-    quantityAvailable: (Number(item.quantityOnHand) - Number(item.quantityReserved)).toFixed(3),
-    quantityOnHand: Number(item.quantityOnHand),
-    quantityReserved: Number(item.quantityReserved),
-    reorderPoint: Number(item.reorderPoint),
-    unitCost: item.unitCost ? Number(item.unitCost) : null,
-  }));
-
-  return res.json({ inventory: enriched, total: Number(countResult[0]?.count || 0) });
+  return res.json({ inventory: inventory.map(docToItem), total });
 });
 
 router.get("/inventory/:id", async (req, res) => {
-  const paramsResult = GetInventoryItemParams.safeParse({ id: Number(req.params.id) });
-  if (!paramsResult.success) {
+  const db = await getDb();
+  const col = db.collection("inventory");
+
+  if (!ObjectId.isValid(req.params.id)) {
     return res.status(400).json({ error: "bad_request", message: "Invalid ID" });
   }
 
-  const [item] = await db.select().from(inventoryTable)
-    .where(eq(inventoryTable.id, paramsResult.data.id))
-    .limit(1);
+  const doc = await col.findOne({ _id: new ObjectId(req.params.id) });
 
-  if (!item) {
+  if (!doc) {
     return res.status(404).json({ error: "not_found", message: "Inventory item not found" });
   }
 
-  return res.json({
-    ...item,
-    quantityAvailable: (Number(item.quantityOnHand) - Number(item.quantityReserved)).toFixed(3),
-    quantityOnHand: Number(item.quantityOnHand),
-    quantityReserved: Number(item.quantityReserved),
-    reorderPoint: Number(item.reorderPoint),
-    unitCost: item.unitCost ? Number(item.unitCost) : null,
-  });
+  return res.json(docToItem(doc as Record<string, unknown>));
 });
 
 router.patch("/inventory/:id", async (req, res) => {
-  const paramsResult = UpdateInventoryItemParams.safeParse({ id: Number(req.params.id) });
-  if (!paramsResult.success) {
+  const db = await getDb();
+  const col = db.collection("inventory");
+
+  if (!ObjectId.isValid(req.params.id)) {
     return res.status(400).json({ error: "bad_request", message: "Invalid ID" });
   }
 
@@ -67,23 +67,17 @@ router.patch("/inventory/:id", async (req, res) => {
   if (bodyResult.data.quantityOnHand !== undefined) updates.quantityOnHand = String(bodyResult.data.quantityOnHand);
   if (bodyResult.data.quantityReserved !== undefined) updates.quantityReserved = String(bodyResult.data.quantityReserved);
 
-  const [updated] = await db.update(inventoryTable)
-    .set(updates)
-    .where(eq(inventoryTable.id, paramsResult.data.id))
-    .returning();
+  const result = await col.findOneAndUpdate(
+    { _id: new ObjectId(req.params.id) },
+    { $set: updates },
+    { returnDocument: "after" }
+  );
 
-  if (!updated) {
+  if (!result) {
     return res.status(404).json({ error: "not_found", message: "Inventory item not found" });
   }
 
-  return res.json({
-    ...updated,
-    quantityAvailable: (Number(updated.quantityOnHand) - Number(updated.quantityReserved)).toFixed(3),
-    quantityOnHand: Number(updated.quantityOnHand),
-    quantityReserved: Number(updated.quantityReserved),
-    reorderPoint: Number(updated.reorderPoint),
-    unitCost: updated.unitCost ? Number(updated.unitCost) : null,
-  });
+  return res.json(docToItem(result as Record<string, unknown>));
 });
 
 export default router;

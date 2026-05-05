@@ -1,7 +1,6 @@
 import { Router } from "express";
-import { db } from "@workspace/db";
-import { transactionsTable } from "@workspace/db";
-import { eq, desc, sql, and } from "drizzle-orm";
+import { getDb } from "@workspace/db";
+import { ObjectId } from "mongodb";
 import { routeEdiDocument } from "../edi/router";
 import {
   ListTransactionsQueryParams,
@@ -11,6 +10,11 @@ import {
 
 const router = Router();
 
+function docToTransaction(doc: Record<string, unknown>) {
+  const { _id, ...rest } = doc;
+  return { ...rest, id: (_id as ObjectId).toHexString() };
+}
+
 router.get("/transactions", async (req, res) => {
   const queryResult = ListTransactionsQueryParams.safeParse(req.query);
   if (!queryResult.success) {
@@ -19,74 +23,72 @@ router.get("/transactions", async (req, res) => {
 
   const { limit = 50, offset = 0, partnerId, transactionType, status } = queryResult.data;
 
-  const conditions = [];
-  if (partnerId) conditions.push(eq(transactionsTable.partnerId, partnerId));
-  if (transactionType) conditions.push(eq(transactionsTable.transactionType, transactionType));
-  if (status) conditions.push(eq(transactionsTable.status, status));
+  const filter: Record<string, unknown> = {};
+  if (partnerId) filter.partnerId = partnerId;
+  if (transactionType) filter.transactionType = transactionType;
+  if (status) filter.status = status;
 
-  const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+  const db = await getDb();
+  const col = db.collection("transactions");
 
-  const [transactions, countResult] = await Promise.all([
-    db.select().from(transactionsTable)
-      .where(whereClause)
-      .orderBy(desc(transactionsTable.createdAt))
-      .limit(limit)
-      .offset(offset),
-    db.select({ count: sql<number>`count(*)` }).from(transactionsTable).where(whereClause),
+  const [transactions, total] = await Promise.all([
+    col.find(filter).sort({ createdAt: -1 }).skip(offset).limit(limit).toArray(),
+    col.countDocuments(filter),
   ]);
 
   return res.json({
-    transactions,
-    total: Number(countResult[0]?.count || 0),
+    transactions: transactions.map(docToTransaction),
+    total,
   });
 });
 
 router.get("/transactions/:id", async (req, res) => {
   const paramsResult = GetTransactionParams.safeParse({ id: Number(req.params.id) });
-  if (!paramsResult.success) {
-    return res.status(400).json({ error: "bad_request", message: "Invalid transaction ID" });
+
+  const db = await getDb();
+  const col = db.collection("transactions");
+
+  let doc;
+  if (ObjectId.isValid(req.params.id)) {
+    doc = await col.findOne({ _id: new ObjectId(req.params.id) });
   }
 
-  const [transaction] = await db.select().from(transactionsTable)
-    .where(eq(transactionsTable.id, paramsResult.data.id))
-    .limit(1);
-
-  if (!transaction) {
+  if (!doc) {
     return res.status(404).json({ error: "not_found", message: "Transaction not found" });
   }
 
-  return res.json(transaction);
+  return res.json(docToTransaction(doc as Record<string, unknown>));
 });
 
 router.post("/transactions/:id/process", async (req, res) => {
-  const paramsResult = ProcessTransactionParams.safeParse({ id: Number(req.params.id) });
-  if (!paramsResult.success) {
+  const db = await getDb();
+  const col = db.collection("transactions");
+
+  if (!ObjectId.isValid(req.params.id)) {
     return res.status(400).json({ error: "bad_request", message: "Invalid transaction ID" });
   }
 
-  const [transaction] = await db.select().from(transactionsTable)
-    .where(eq(transactionsTable.id, paramsResult.data.id))
-    .limit(1);
+  const doc = await col.findOne({ _id: new ObjectId(req.params.id) });
 
-  if (!transaction) {
+  if (!doc) {
     return res.status(404).json({ error: "not_found", message: "Transaction not found" });
   }
 
-  if (transaction.status !== "pending") {
+  if (doc.status !== "pending") {
     return res.json({
       success: false,
-      transactionId: transaction.id,
-      transactionType: transaction.transactionType,
-      partnerId: transaction.partnerId,
-      message: `Transaction is already in status: ${transaction.status}`,
+      transactionId: req.params.id,
+      transactionType: doc.transactionType,
+      partnerId: doc.partnerId,
+      message: `Transaction is already in status: ${doc.status}`,
     });
   }
 
-  if (!transaction.rawEdi) {
+  if (!doc.rawEdi) {
     return res.status(400).json({ error: "bad_request", message: "Transaction has no raw EDI to process" });
   }
 
-  const result = await routeEdiDocument(transaction.rawEdi);
+  const result = await routeEdiDocument(doc.rawEdi as string);
   return res.json(result);
 });
 

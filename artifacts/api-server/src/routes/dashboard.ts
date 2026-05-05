@@ -1,7 +1,5 @@
 import { Router } from "express";
-import { db } from "@workspace/db";
-import { transactionsTable, purchaseOrdersTable, inventoryTable, partnersTable } from "@workspace/db";
-import { sql, lt, gte, eq } from "drizzle-orm";
+import { getDb } from "@workspace/db";
 
 const router = Router();
 
@@ -9,7 +7,38 @@ router.get("/dashboard/summary", async (req, res) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
+  const db = await getDb();
+  const transactions = db.collection("transactions");
+  const purchaseOrders = db.collection("purchase_orders");
+  const inventory = db.collection("inventory");
+  const partners = db.collection("partners");
+
   const [
+    totalTransactions,
+    pendingTransactions,
+    pendingPurchaseOrders,
+    totalInventoryItems,
+    activePartners,
+    transactionsToday,
+    failedTransactions,
+    allInventory,
+  ] = await Promise.all([
+    transactions.countDocuments(),
+    transactions.countDocuments({ status: "pending" }),
+    purchaseOrders.countDocuments({ status: "pending" }),
+    inventory.countDocuments(),
+    partners.countDocuments({ isActive: true }),
+    transactions.countDocuments({ createdAt: { $gte: today } }),
+    transactions.countDocuments({ status: "failed" }),
+    inventory.find({}).toArray(),
+  ]);
+
+  const lowStockItems = allInventory.filter((item) => {
+    const available = Number(item.quantityOnHand) - Number(item.quantityReserved);
+    return available <= Number(item.reorderPoint);
+  }).length;
+
+  return res.json({
     totalTransactions,
     pendingTransactions,
     pendingPurchaseOrders,
@@ -18,46 +47,19 @@ router.get("/dashboard/summary", async (req, res) => {
     activePartners,
     transactionsToday,
     failedTransactions,
-  ] = await Promise.all([
-    db.select({ count: sql<number>`count(*)` }).from(transactionsTable),
-    db.select({ count: sql<number>`count(*)` }).from(transactionsTable).where(eq(transactionsTable.status, "pending")),
-    db.select({ count: sql<number>`count(*)` }).from(purchaseOrdersTable).where(eq(purchaseOrdersTable.status, "pending")),
-    db.select({ count: sql<number>`count(*)` }).from(inventoryTable),
-    db.select({ count: sql<number>`count(*)` }).from(inventoryTable).where(
-      sql`${inventoryTable.quantityOnHand} - ${inventoryTable.quantityReserved} <= ${inventoryTable.reorderPoint}`
-    ),
-    db.select({ count: sql<number>`count(*)` }).from(partnersTable).where(eq(partnersTable.isActive, true)),
-    db.select({ count: sql<number>`count(*)` }).from(transactionsTable).where(gte(transactionsTable.createdAt, today)),
-    db.select({ count: sql<number>`count(*)` }).from(transactionsTable).where(eq(transactionsTable.status, "failed")),
-  ]);
-
-  return res.json({
-    totalTransactions: Number(totalTransactions[0]?.count || 0),
-    pendingTransactions: Number(pendingTransactions[0]?.count || 0),
-    pendingPurchaseOrders: Number(pendingPurchaseOrders[0]?.count || 0),
-    totalInventoryItems: Number(totalInventoryItems[0]?.count || 0),
-    lowStockItems: Number(lowStockItems[0]?.count || 0),
-    activePartners: Number(activePartners[0]?.count || 0),
-    transactionsToday: Number(transactionsToday[0]?.count || 0),
-    failedTransactions: Number(failedTransactions[0]?.count || 0),
   });
 });
 
 router.get("/dashboard/transaction-stats", async (req, res) => {
+  const db = await getDb();
+  const col = db.collection("transactions");
+
   const [byTypeRaw, byStatusRaw, byPartnerRaw] = await Promise.all([
-    db.select({
-      type: transactionsTable.transactionType,
-      count: sql<number>`count(*)`,
-    }).from(transactionsTable).groupBy(transactionsTable.transactionType),
-    db.select({
-      status: transactionsTable.status,
-      count: sql<number>`count(*)`,
-    }).from(transactionsTable).groupBy(transactionsTable.status),
-    db.select({
-      partnerId: transactionsTable.partnerId,
-      partnerName: transactionsTable.partnerName,
-      count: sql<number>`count(*)`,
-    }).from(transactionsTable).groupBy(transactionsTable.partnerId, transactionsTable.partnerName),
+    col.aggregate([{ $group: { _id: "$transactionType", count: { $sum: 1 } } }]).toArray(),
+    col.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }]).toArray(),
+    col.aggregate([
+      { $group: { _id: { partnerId: "$partnerId", partnerName: "$partnerName" }, count: { $sum: 1 } } },
+    ]).toArray(),
   ]);
 
   const typeLabels: Record<string, string> = {
@@ -71,36 +73,47 @@ router.get("/dashboard/transaction-stats", async (req, res) => {
 
   return res.json({
     byType: byTypeRaw.map((r) => ({
-      type: r.type,
-      count: Number(r.count),
-      label: typeLabels[r.type] || r.type,
+      type: r._id,
+      count: r.count,
+      label: typeLabels[r._id] || r._id,
     })),
     byStatus: byStatusRaw.map((r) => ({
-      status: r.status,
-      count: Number(r.count),
+      status: r._id,
+      count: r.count,
     })),
     byPartner: byPartnerRaw.map((r) => ({
-      partnerId: r.partnerId,
-      partnerName: r.partnerName,
-      count: Number(r.count),
+      partnerId: r._id.partnerId,
+      partnerName: r._id.partnerName,
+      count: r.count,
     })),
   });
 });
 
 router.get("/dashboard/recent-activity", async (req, res) => {
-  const activities = await db.select({
-    id: transactionsTable.id,
-    transactionType: transactionsTable.transactionType,
-    direction: transactionsTable.direction,
-    partnerName: transactionsTable.partnerName,
-    status: transactionsTable.status,
-    controlNumber: transactionsTable.controlNumber,
-    createdAt: transactionsTable.createdAt,
-  }).from(transactionsTable)
-    .orderBy(sql`${transactionsTable.createdAt} DESC`)
-    .limit(20);
+  const db = await getDb();
+  const col = db.collection("transactions");
 
-  return res.json({ activities });
+  const activities = await col
+    .find({}, {
+      projection: {
+        transactionType: 1,
+        direction: 1,
+        partnerName: 1,
+        status: 1,
+        controlNumber: 1,
+        createdAt: 1,
+      },
+    })
+    .sort({ createdAt: -1 })
+    .limit(20)
+    .toArray();
+
+  return res.json({
+    activities: activities.map(({ _id, ...rest }) => ({
+      ...rest,
+      id: _id.toHexString(),
+    })),
+  });
 });
 
 export default router;
