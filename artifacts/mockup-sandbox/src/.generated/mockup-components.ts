@@ -2,6 +2,6 @@
 type ModuleMap = Record<string, () => Promise<Record<string, unknown>>>;
 export const modules: ModuleMap = {
   "./components/mockups/edi-minimal/IceMinimal.tsx": () => import("../components/mockups/edi-minimal/IceMinimal.tsx"),
-  "./components/mockups/edi-terminal/Terminal.tsx": () => import("../components/mockups/edi-terminal/Terminal.tsx"),
-  "./components/mockups/edi-warm/WarmEditorial.tsx": () => import("../components/mockups/edi-warm/WarmEditorial.tsx")
+  "./components/mockups/edi-warm/WarmEditorial.tsx": () => import("../components/mockups/edi-warm/WarmEditorial.tsx"),
+  "./components/mockups/edi-terminal/Terminal.tsx": () => import("../components/mockups/edi-terminal/Terminal.tsx")
 };
