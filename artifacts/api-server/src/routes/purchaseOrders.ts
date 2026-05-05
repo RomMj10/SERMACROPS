@@ -1,9 +1,15 @@
 import { Router } from "express";
 import { getDb } from "@workspace/db";
 import { ObjectId } from "mongodb";
+import { generateEdi } from "../edi/parser";
+import { PARTNERS } from "../edi/config";
+import { createAs2Message, sendAs2Message } from "../edi/as2Client";
+import { logger } from "../lib/logger";
 import {
   ListPurchaseOrdersQueryParams,
 } from "@workspace/api-zod";
+
+const SERMACROPS_ID = "SERMACROPS";
 
 const router = Router();
 
@@ -52,6 +58,85 @@ router.get("/purchase-orders/:id", async (req, res) => {
   }
 
   return res.json(docToPo(doc as Record<string, unknown>));
+});
+
+router.post("/purchase-orders/:id/acknowledge", async (req, res) => {
+  const db = await getDb();
+  const poCol = db.collection("purchase_orders");
+  const txCol = db.collection("transactions");
+
+  if (!ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ error: "bad_request", message: "Invalid ID" });
+  }
+
+  const po = await poCol.findOne({ _id: new ObjectId(req.params.id) });
+
+  if (!po) {
+    return res.status(404).json({ error: "not_found", message: "Purchase order not found" });
+  }
+
+  if (po.direction !== "inbound") {
+    return res.status(400).json({ error: "bad_request", message: "Only inbound purchase orders can be acknowledged" });
+  }
+
+  if (po.status !== "pending") {
+    return res.status(400).json({
+      error: "bad_request",
+      message: `Purchase order is already in status: ${po.status}`,
+    });
+  }
+
+  const partnerId = po.partnerId as string;
+  const partner = PARTNERS[partnerId];
+  const partnerName = partner?.name || partnerId;
+  const cn = req.params.id.slice(-9).padStart(9, "0");
+  const now = new Date();
+
+  const edi855 = generateEdi("855", SERMACROPS_ID, partnerId, cn, {
+    purchaseOrderNumber: po.poNumber,
+    acknowledgeCode: "AC",
+  });
+
+  await txCol.insertOne({
+    transactionType: "855",
+    direction: "outbound",
+    partnerId,
+    partnerName,
+    controlNumber: cn,
+    status: "processed",
+    integrityStatus: "valid",
+    rawEdi: edi855,
+    parsedJson: { purchaseOrderNumber: po.poNumber, acknowledgeCode: "AC" },
+    errorMessage: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await poCol.updateOne(
+    { _id: new ObjectId(req.params.id) },
+    { $set: { status: "acknowledged", updatedAt: now } }
+  );
+
+  if (partner) {
+    try {
+      const as2Msg = createAs2Message(SERMACROPS_ID, partner.as2Id, edi855, "855");
+      const result = await sendAs2Message(partner.endpointUrl, as2Msg);
+      if (!result.success) {
+        logger.warn({ partnerId, error: result.error }, "AS2 send failed for 855");
+      }
+    } catch (err) {
+      logger.warn({ err, partnerId }, "AS2 send error for 855 (non-fatal)");
+    }
+  }
+
+  logger.info({ poId: req.params.id, poNumber: po.poNumber, partnerId }, "Purchase order acknowledged — EDI 855 sent");
+
+  return res.json({
+    success: true,
+    message: `Purchase order ${po.poNumber} acknowledged successfully`,
+    poNumber: po.poNumber,
+    partnerId,
+  });
 });
 
 export default router;

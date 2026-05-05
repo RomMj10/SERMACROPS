@@ -88,19 +88,7 @@ export async function handle850(parsed: ParsedEdiDocument, transactionId: string
     { $set: { status: "processed", updatedAt: now } }
   );
 
-  log.info("EDI 850 processed — PO created");
-
-  const edi855 = generateEdi("855", SERMACROPS_ID, parsed.senderId, cn, {
-    purchaseOrderNumber: summary.purchaseOrderNumber,
-    acknowledgeCode: "AC",
-  });
-
-  await recordOutbound("855", parsed.senderId, PARTNERS[parsed.senderId]?.name || parsed.senderId, cn, edi855, {
-    purchaseOrderNumber: summary.purchaseOrderNumber,
-    acknowledgeCode: "AC",
-  });
-
-  await sendToParter("855", parsed.senderId, edi855);
+  log.info("EDI 850 processed — PO created, awaiting manual acknowledgment");
 
   const supplierPartner = Object.values(PARTNERS).find((p) => p.type === "supplier");
   if (supplierPartner) {
