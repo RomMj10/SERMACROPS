@@ -127,7 +127,7 @@ export default function DashboardPage() {
                 ))}
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="overflow-y-auto max-h-[300px] pr-1 space-y-4">
                 {activity?.activities?.map((item) => (
                   <div key={item.id} className="flex items-start gap-4 pb-4 border-b border-border/50 last:border-0 last:pb-0">
                     <div className="mt-1">
@@ -139,7 +139,7 @@ export default function DashboardPage() {
                         <Clock className="h-5 w-5 text-amber-500" />
                       )}
                     </div>
-                    <div className="flex-1 space-y-1">
+                    <div className="flex-1 space-y-1 min-w-0">
                       <p className="text-sm font-medium leading-none">
                         {item.transactionType} {item.direction === 'inbound' ? 'from' : 'to'} {item.partnerName}
                       </p>
@@ -147,7 +147,7 @@ export default function DashboardPage() {
                         {item.controlNumber || `ID: ${item.id}`} • {new Date(item.createdAt).toLocaleString()}
                       </p>
                     </div>
-                    <div>
+                    <div className="shrink-0">
                       <Badge variant="outline" className={`text-[10px] capitalize ${STATUS_COLORS[item.status] || ''}`}>
                         {item.status}
                       </Badge>
