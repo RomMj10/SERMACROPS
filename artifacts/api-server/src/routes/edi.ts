@@ -36,22 +36,12 @@ router.post("/edi/upload", upload.single("file"), async (req, res) => {
     });
   }
 
-  const partnerId: string = (req.body?.partnerId || "").trim();
-  if (!partnerId) {
-    return res.status(400).json({ error: "bad_request", message: "partnerId is required." });
-  }
-
   const docType = (req.body?.transactionType || "850").trim() as EdiDocType;
   if (!KNOWN_DOC_TYPES.includes(docType)) {
     return res.status(400).json({
       error: "bad_request",
       message: `Unknown transaction type "${docType}". Supported: ${KNOWN_DOC_TYPES.join(", ")}`,
     });
-  }
-
-  const partner = PARTNERS[partnerId];
-  if (!partner) {
-    return res.status(400).json({ error: "bad_request", message: `Unknown partner: ${partnerId}` });
   }
 
   const csvText = req.file.buffer.toString("utf-8");
@@ -64,6 +54,21 @@ router.post("/edi/upload", upload.single("file"), async (req, res) => {
       error: "csv_parse_error",
       message: err instanceof Error ? err.message : "Failed to parse CSV",
     });
+  }
+
+  // Auto-detect partner from CSV's partner_id column; fall back to explicit body field
+  const partnerIdFromCsv = (rows[0]?.partner_id || "").trim().toUpperCase();
+  const partnerId: string = (req.body?.partnerId || partnerIdFromCsv || "").trim().toUpperCase();
+  if (!partnerId) {
+    return res.status(400).json({
+      error: "bad_request",
+      message: "Could not determine partner. Add a 'partner_id' column to your CSV or include partnerId in the request.",
+    });
+  }
+
+  const partner = PARTNERS[partnerId];
+  if (!partner) {
+    return res.status(400).json({ error: "bad_request", message: `Unknown partner: ${partnerId}` });
   }
 
   const cn = String(Date.now()).slice(-9);

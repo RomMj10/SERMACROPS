@@ -1,5 +1,4 @@
 import { useState, useRef, useEffect } from "react";
-import { useListPartners } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import {
   Upload, FileText, Download, CheckCircle2, XCircle,
-  AlertTriangle, Loader2, FileUp, Info,
+  AlertTriangle, Loader2, FileUp, Info, Braces, FileCode2,
 } from "lucide-react";
 
 interface DocTypeSpec {
@@ -17,7 +16,6 @@ interface DocTypeSpec {
   description: string;
   requiredHeaders: string[];
   allHeaders: string[];
-  sampleRows: string[][];
 }
 
 const EDI_TYPES: Array<{ code: string; label: string }> = [
@@ -29,31 +27,20 @@ const EDI_TYPES: Array<{ code: string; label: string }> = [
   { code: "990", label: "Response to Load Tender" },
 ];
 
-// Partner types that make sense per document type (inbound from their perspective)
-const PARTNER_TYPES_BY_DOC: Record<string, string[]> = {
-  "850": ["client"],
-  "855": ["supplier"],
-  "856": ["supplier"],
-  "810": ["client", "supplier"],
-  "204": ["logistics"],
-  "990": ["logistics"],
-};
+type ResultView = "json" | "edi";
 
 export default function CsvUploadPage() {
   const [file, setFile] = useState<File | null>(null);
-  const [partnerId, setPartnerId] = useState("");
   const [docType, setDocType] = useState("850");
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [resultView, setResultView] = useState<ResultView>("json");
   const [specs, setSpecs] = useState<Record<string, DocTypeSpec>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  const { data: partnersData, isLoading: isLoadingPartners } = useListPartners();
-
-  // Load specs from the API
   useEffect(() => {
     fetch("/api/edi/specs")
       .then((r) => r.json())
@@ -61,18 +48,13 @@ export default function CsvUploadPage() {
       .catch(() => {});
   }, []);
 
-  // Reset partner when doc type changes (filter may not include current partner)
   useEffect(() => {
-    setPartnerId("");
     setResult(null);
+    setFile(null);
   }, [docType]);
 
-  const allowedPartnerTypes = PARTNER_TYPES_BY_DOC[docType] || [];
-  const filteredPartners = partnersData?.partners?.filter(
-    (p) => allowedPartnerTypes.includes(p.type)
-  ) ?? [];
-
   const currentSpec: DocTypeSpec | undefined = specs[docType];
+  const docTypeInfo = EDI_TYPES.find((t) => t.code === docType);
 
   function handleFileChange(selected: File | null) {
     if (!selected) return;
@@ -91,19 +73,17 @@ export default function CsvUploadPage() {
   }
 
   async function handleUpload() {
-    if (!file || !partnerId) return;
+    if (!file) return;
     setIsUploading(true);
     setResult(null);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("partnerId", partnerId);
       formData.append("transactionType", docType);
 
       const res = await fetch("/api/edi/upload", { method: "POST", body: formData });
       const data = await res.json();
-
       setResult({ ...data, httpStatus: res.status });
 
       if (res.ok && data.success) {
@@ -128,11 +108,19 @@ export default function CsvUploadPage() {
     }
   }
 
-  function downloadTemplate() {
-    window.open(`/api/edi/template/${docType}`, "_blank");
+  // Build the JSON summary from the result for display
+  function buildJsonSummary(r: any) {
+    if (!r) return null;
+    return {
+      success: r.success,
+      transactionId: r.transactionId,
+      transactionType: r.transactionType,
+      partnerId: r.partnerId,
+      message: r.message,
+      csvRowsProcessed: r.csvRowsProcessed,
+      validation: r.validation,
+    };
   }
-
-  const docTypeInfo = EDI_TYPES.find((t) => t.code === docType);
 
   return (
     <div className="space-y-6">
@@ -140,28 +128,32 @@ export default function CsvUploadPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">CSV Upload</h1>
           <p className="text-muted-foreground mt-1">
-            Upload a trading partner CSV. It will be converted to ANSI X12 EDI and processed.
+            Upload a CSV file — it is converted to ANSI X12 EDI, validated, and processed automatically.
           </p>
         </div>
-        <Button variant="outline" onClick={downloadTemplate} className="gap-2">
+        <Button
+          variant="outline"
+          onClick={() => window.open(`/api/edi/template/${docType}`, "_blank")}
+          className="gap-2"
+        >
           <Download className="h-4 w-4" />
           Download Template
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
 
         {/* ── Upload card ── */}
         <Card className="border-border">
           <CardHeader>
             <CardTitle>Upload EDI CSV</CardTitle>
             <CardDescription>
-              Select the document type, then upload the corresponding CSV file.
+              Select the document type, drop your CSV, and hit Convert.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
 
-            {/* Document type */}
+            {/* Document type selector */}
             <div className="space-y-2">
               <label className="text-sm font-medium">EDI Document Type</label>
               <Select value={docType} onValueChange={setDocType}>
@@ -178,42 +170,18 @@ export default function CsvUploadPage() {
                 </SelectContent>
               </Select>
               {currentSpec && (
-                <p className="text-xs text-muted-foreground flex items-center gap-1">
+                <p className="text-xs text-muted-foreground flex items-center gap-1.5">
                   <Info className="h-3 w-3 shrink-0" />
                   {currentSpec.description}
                 </p>
               )}
             </div>
 
-            {/* Partner selector — filtered by doc type */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Trading Partner (Sender)</label>
-              <Select value={partnerId} onValueChange={setPartnerId} disabled={isLoadingPartners}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select the partner sending this document" />
-                </SelectTrigger>
-                <SelectContent>
-                  {filteredPartners.length === 0 ? (
-                    <SelectItem value="__none" disabled>
-                      No partners for this document type
-                    </SelectItem>
-                  ) : (
-                    filteredPartners.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name}
-                        <span className="ml-2 text-xs text-muted-foreground capitalize">({p.type})</span>
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Dynamic column reference */}
+            {/* Column chips */}
             {currentSpec && (
               <div className="bg-secondary/40 rounded-md p-3 space-y-2">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-foreground">
-                  Required columns for EDI {docType}
+                  Expected columns
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {currentSpec.allHeaders.map((h) => (
@@ -231,7 +199,7 @@ export default function CsvUploadPage() {
                   ))}
                 </div>
                 <p className="text-[10px] text-muted-foreground">
-                  <span className="text-primary font-semibold">Bold</span> = required &nbsp;·&nbsp; others optional
+                  <span className="text-primary font-semibold">Highlighted</span> = required &nbsp;·&nbsp; others optional
                 </p>
               </div>
             )}
@@ -243,7 +211,7 @@ export default function CsvUploadPage() {
               onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
               className={[
-                "border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors",
+                "border-2 border-dashed rounded-lg p-10 text-center cursor-pointer transition-colors",
                 isDragging
                   ? "border-primary bg-primary/5"
                   : file
@@ -262,21 +230,23 @@ export default function CsvUploadPage() {
                 <div className="flex flex-col items-center gap-2">
                   <FileText className="h-10 w-10 text-emerald-600" />
                   <span className="font-medium text-emerald-800">{file.name}</span>
-                  <span className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(1)} KB</span>
-                  <span className="text-xs text-muted-foreground">Click or drop to replace</span>
+                  <span className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(1)} KB · click or drop to replace</span>
                 </div>
               ) : (
-                <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                <div className="flex flex-col items-center gap-3 text-muted-foreground">
                   <FileUp className="h-10 w-10" />
-                  <span className="font-medium">Drop a CSV file here</span>
-                  <span className="text-xs">or click to browse</span>
+                  <div>
+                    <p className="font-medium">Drop a CSV file here</p>
+                    <p className="text-xs mt-0.5">or click to browse</p>
+                  </div>
                 </div>
               )}
             </div>
 
+            {/* Convert button */}
             <Button
               className="w-full gap-2"
-              disabled={!file || !partnerId || isUploading}
+              disabled={!file || isUploading}
               onClick={handleUpload}
             >
               {isUploading ? (
@@ -290,17 +260,51 @@ export default function CsvUploadPage() {
 
         {/* ── Result card ── */}
         <Card className="border-border flex flex-col">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5" />
-              Processing Result
-            </CardTitle>
-            <CardDescription>ANSI X12 validation and EDI routing outcome</CardDescription>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <FileText className="h-5 w-5" />
+                  Processing Result
+                </CardTitle>
+                <CardDescription className="mt-1">ANSI X12 validation and EDI routing outcome</CardDescription>
+              </div>
+              {/* View toggle — only shown once there's a result */}
+              {result?.success && (
+                <div className="flex items-center gap-1 bg-secondary rounded-lg p-1">
+                  <button
+                    onClick={() => setResultView("json")}
+                    className={[
+                      "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+                      resultView === "json"
+                        ? "bg-card text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    ].join(" ")}
+                  >
+                    <Braces className="h-3.5 w-3.5" />
+                    JSON
+                  </button>
+                  <button
+                    onClick={() => setResultView("edi")}
+                    className={[
+                      "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+                      resultView === "edi"
+                        ? "bg-card text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    ].join(" ")}
+                  >
+                    <FileCode2 className="h-3.5 w-3.5" />
+                    Raw EDI
+                  </button>
+                </div>
+              )}
+            </div>
           </CardHeader>
-          <CardContent className="flex-1 overflow-y-auto">
+          <CardContent className="flex-1">
             {!result ? (
-              <div className="h-48 flex items-center justify-center text-muted-foreground text-sm">
-                Upload a CSV to see the result
+              <div className="h-64 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+                <FileUp className="h-8 w-8 opacity-30" />
+                <p className="text-sm">Upload a CSV to see the result</p>
               </div>
             ) : (
               <div className="space-y-4">
@@ -321,29 +325,6 @@ export default function CsvUploadPage() {
                   </div>
                 </div>
 
-                {/* Stats */}
-                {result.success && (
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div className="bg-secondary/40 rounded-md p-3">
-                      <p className="text-muted-foreground text-xs uppercase tracking-wide">Document Type</p>
-                      <p className="font-bold text-lg mt-0.5">
-                        {result.transactionType}
-                        <span className="ml-2 text-xs font-normal text-muted-foreground">
-                          {docTypeInfo?.label}
-                        </span>
-                      </p>
-                    </div>
-                    <div className="bg-secondary/40 rounded-md p-3">
-                      <p className="text-muted-foreground text-xs uppercase tracking-wide">Rows Processed</p>
-                      <p className="font-bold text-lg mt-0.5">{result.csvRowsProcessed ?? "—"}</p>
-                    </div>
-                    <div className="col-span-2 bg-secondary/40 rounded-md p-3">
-                      <p className="text-muted-foreground text-xs uppercase tracking-wide">Transaction ID</p>
-                      <p className="font-mono text-xs mt-1 break-all">{result.transactionId ?? "—"}</p>
-                    </div>
-                  </div>
-                )}
-
                 {/* Validation errors */}
                 {result.errors && result.errors.length > 0 && (
                   <div className="space-y-2">
@@ -360,18 +341,40 @@ export default function CsvUploadPage() {
                   </div>
                 )}
 
-                {/* Generated EDI preview */}
-                {result.generatedEdi && (
+                {/* JSON view */}
+                {result.success && resultView === "json" && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        Generated ANSI X12 EDI
+                        Parsed JSON
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-xs">
+                          {result.csvRowsProcessed} row{result.csvRowsProcessed !== 1 ? "s" : ""}
+                        </Badge>
+                        <Badge variant="outline" className="text-xs font-mono">
+                          {result.transactionType} · {docTypeInfo?.label}
+                        </Badge>
+                      </div>
+                    </div>
+                    <pre className="bg-secondary/40 border border-border rounded-md p-4 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-words leading-relaxed max-h-96 overflow-y-auto">
+                      {JSON.stringify(buildJsonSummary(result), null, 2)}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Raw EDI view */}
+                {result.success && resultView === "edi" && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Raw ANSI X12 EDI
                       </p>
                       <Badge variant="outline" className="text-emerald-700 border-emerald-400/60 bg-emerald-50 text-xs">
                         X12 005010 ✓
                       </Badge>
                     </div>
-                    <pre className="bg-secondary/40 border border-border rounded-md p-3 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed max-h-64 overflow-y-auto">
+                    <pre className="bg-secondary/40 border border-border rounded-md p-4 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed max-h-96 overflow-y-auto">
                       {result.generatedEdi}
                     </pre>
                   </div>
