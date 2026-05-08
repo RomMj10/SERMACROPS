@@ -99,6 +99,30 @@ export const DOC_TYPE_SPECS: Record<EdiDocType, DocTypeSpec> = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DOC TYPE AUTO-DETECTION FROM CSV HEADERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Infer the EDI document type by checking which spec's required headers
+ * are all present in the CSV. More-specific types (more required headers)
+ * are checked first so 810 wins over 850 when invoice_number is present.
+ */
+export function inferDocTypeFromCsv(rows: CsvRow[]): EdiDocType {
+  if (rows.length === 0) throw new Error("CSV has no data rows.");
+  const headers = new Set(Object.keys(rows[0]));
+
+  const ordered: EdiDocType[] = ["810", "856", "990", "204", "855", "850"];
+  for (const code of ordered) {
+    const required = DOC_TYPE_SPECS[code].requiredHeaders;
+    if (required.every((h) => headers.has(h))) return code;
+  }
+  throw new Error(
+    "Cannot detect EDI document type from CSV headers. " +
+    "Make sure your columns match one of the supported formats."
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CSV PARSING
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -1,12 +1,13 @@
 import { Router } from "express";
 import multer from "multer";
 import { routeEdiDocument } from "../edi/router";
-import { generateEdi } from "../edi/parser";
+import { generateEdi, parseEdi } from "../edi/parser";
 import {
   parseCsv,
   csvToEdi,
   validateAnsiX12,
   getCsvTemplate,
+  inferDocTypeFromCsv,
   DOC_TYPE_SPECS,
   type EdiDocType,
 } from "../edi/csvConverter";
@@ -36,16 +37,9 @@ router.post("/edi/upload", upload.single("file"), async (req, res) => {
     });
   }
 
-  const docType = (req.body?.transactionType || "850").trim() as EdiDocType;
-  if (!KNOWN_DOC_TYPES.includes(docType)) {
-    return res.status(400).json({
-      error: "bad_request",
-      message: `Unknown transaction type "${docType}". Supported: ${KNOWN_DOC_TYPES.join(", ")}`,
-    });
-  }
-
   const csvText = req.file.buffer.toString("utf-8");
 
+  // 1. Parse CSV
   let rows;
   try {
     rows = parseCsv(csvText);
@@ -56,13 +50,24 @@ router.post("/edi/upload", upload.single("file"), async (req, res) => {
     });
   }
 
-  // Auto-detect partner from CSV's partner_id column; fall back to explicit body field
+  // 2. Auto-detect doc type from CSV headers
+  let docType: EdiDocType;
+  try {
+    docType = inferDocTypeFromCsv(rows);
+  } catch (err) {
+    return res.status(422).json({
+      error: "doc_type_detection_failed",
+      message: err instanceof Error ? err.message : "Could not detect document type",
+    });
+  }
+
+  // 3. Auto-detect partner from CSV's partner_id column
   const partnerIdFromCsv = (rows[0]?.partner_id || "").trim().toUpperCase();
   const partnerId: string = (req.body?.partnerId || partnerIdFromCsv || "").trim().toUpperCase();
   if (!partnerId) {
     return res.status(400).json({
       error: "bad_request",
-      message: "Could not determine partner. Add a 'partner_id' column to your CSV or include partnerId in the request.",
+      message: "Could not determine partner. Add a 'partner_id' column to your CSV.",
     });
   }
 
@@ -71,8 +76,8 @@ router.post("/edi/upload", upload.single("file"), async (req, res) => {
     return res.status(400).json({ error: "bad_request", message: `Unknown partner: ${partnerId}` });
   }
 
+  // 4. Convert CSV → ANSI X12 EDI
   const cn = String(Date.now()).slice(-9);
-
   let rawEdi: string;
   try {
     rawEdi = csvToEdi(rows, docType, partnerId, "SERMACROPS", cn);
@@ -83,6 +88,7 @@ router.post("/edi/upload", upload.single("file"), async (req, res) => {
     });
   }
 
+  // 5. Validate ANSI X12 structure
   const validation = validateAnsiX12(rawEdi);
   if (!validation.valid) {
     return res.status(422).json({
@@ -92,18 +98,24 @@ router.post("/edi/upload", upload.single("file"), async (req, res) => {
     });
   }
 
+  // 6. Parse the generated EDI back to structured JSON for the response
+  const parsedEdiJson = parseEdi(rawEdi);
+
   logger.info(
     { partnerId, docType, rowCount: rows.length, cn },
     `CSV uploaded and converted to ANSI X12 EDI ${docType}`
   );
 
+  // 7. Route / process the EDI document
   const result = await routeEdiDocument(rawEdi);
 
   return res.json({
     ...result,
+    detectedDocType: docType,
+    detectedDocLabel: DOC_TYPE_SPECS[docType].label,
     csvRowsProcessed: rows.length,
     generatedEdi: rawEdi,
-    validation: { valid: true },
+    parsedEdiJson,
   });
 });
 
