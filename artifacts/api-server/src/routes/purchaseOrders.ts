@@ -2,6 +2,7 @@ import { Router } from "express";
 import { getDb } from "@workspace/db";
 import { ObjectId } from "mongodb";
 import { generateEdi } from "../edi/parser";
+import { generateSupplierPoCsv } from "../edi/csvConverter";
 import { PARTNERS } from "../edi/config";
 import { createAs2Message, sendAs2Message } from "../edi/as2Client";
 import { logger } from "../lib/logger";
@@ -59,6 +60,50 @@ router.get("/purchase-orders/:id", async (req, res) => {
 
   return res.json(docToPo(doc as Record<string, unknown>));
 });
+
+// ─── Download CSV for an outbound supplier PO ────────────────────────────────
+
+router.get("/purchase-orders/:id/csv", async (req, res) => {
+  const db = await getDb();
+  const col = db.collection("purchase_orders");
+
+  if (!ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ error: "bad_request", message: "Invalid ID" });
+  }
+
+  const po = await col.findOne({ _id: new ObjectId(req.params.id) });
+
+  if (!po) {
+    return res.status(404).json({ error: "not_found", message: "Purchase order not found" });
+  }
+
+  if (po.direction !== "outbound") {
+    return res.status(400).json({ error: "bad_request", message: "CSV export is only available for outbound purchase orders." });
+  }
+
+  const items = (po.items as Array<Record<string, unknown>> | undefined) || [];
+  const csvData = generateSupplierPoCsv({
+    poNumber: po.poNumber as string,
+    supplierId: po.partnerId as string,
+    supplierName: po.partnerName as string,
+    currency: (po.currency as string) || "USD",
+    requestedDate: new Date().toISOString().slice(0, 10),
+    items: items.map((item) => ({
+      productId: String(item.productId || ""),
+      description: String(item.description || item.productId || ""),
+      quantity: Number(item.quantity || 0),
+      uom: String(item.uom || "EA"),
+      unitPrice: Number(item.unitPrice || 0),
+    })),
+  });
+
+  const filename = `${po.poNumber}_supplier_po.csv`;
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  return res.send(csvData);
+});
+
+// ─── Acknowledge an inbound PO (send EDI 855) ────────────────────────────────
 
 router.post("/purchase-orders/:id/acknowledge", async (req, res) => {
   const db = await getDb();

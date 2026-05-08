@@ -5,7 +5,7 @@ import {
   ShoppingCart,
   Package,
   Users,
-  Terminal,
+  Upload,
   Activity
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -16,7 +16,7 @@ const navigation = [
   { name: "Purchase Orders", href: "/purchase-orders", icon: ShoppingCart },
   { name: "Inventory", href: "/inventory", icon: Package },
   { name: "Partners", href: "/partners", icon: Users },
-  { name: "EDI Simulator", href: "/edi-simulator", icon: Terminal },
+  { name: "CSV Upload", href: "/csv-upload", icon: Upload },
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {

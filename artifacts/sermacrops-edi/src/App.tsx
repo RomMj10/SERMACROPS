@@ -10,7 +10,7 @@ import TransactionsPage from "@/pages/transactions";
 import PurchaseOrdersPage from "@/pages/purchase-orders";
 import InventoryPage from "@/pages/inventory";
 import PartnersPage from "@/pages/partners";
-import EdiSimulatorPage from "@/pages/edi-simulator";
+import CsvUploadPage from "@/pages/csv-upload";
 
 const queryClient = new QueryClient();
 
@@ -23,7 +23,7 @@ function Router() {
         <Route path="/purchase-orders" component={PurchaseOrdersPage} />
         <Route path="/inventory" component={InventoryPage} />
         <Route path="/partners" component={PartnersPage} />
-        <Route path="/edi-simulator" component={EdiSimulatorPage} />
+        <Route path="/csv-upload" component={CsvUploadPage} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

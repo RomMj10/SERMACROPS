@@ -6,7 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowDownLeft, ArrowUpRight, CheckCheck, Loader2 } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, CheckCheck, Loader2, FileDown } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "text-amber-600 border-amber-400/60 bg-amber-100",
@@ -26,10 +27,20 @@ async function acknowledgePurchaseOrder(id: string): Promise<{ success: boolean;
   return res.json();
 }
 
+function downloadPoCsv(id: string, poNumber: string) {
+  const a = document.createElement("a");
+  a.href = `/api/purchase-orders/${id}/csv`;
+  a.download = `${poNumber}_supplier_po.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
 export default function PurchaseOrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [acknowledgedIds, setAcknowledgedIds] = useState<Set<string>>(new Set());
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   const { data, isLoading } = useListPurchaseOrders({
     status: statusFilter !== "all" ? (statusFilter as any) : undefined,
@@ -41,6 +52,10 @@ export default function PurchaseOrdersPage() {
       setAcknowledgedIds((prev) => new Set(prev).add(id));
       queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/summary"] });
+      toast({ title: "PO Acknowledged", description: "EDI 855 sent to trading partner." });
+    },
+    onError: (err: any) => {
+      toast({ title: "Acknowledgment Failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -97,7 +112,7 @@ export default function PurchaseOrdersPage() {
                   <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                   <TableCell><Skeleton className="h-6 w-32 rounded-full" /></TableCell>
                   <TableCell><Skeleton className="h-4 w-32" /></TableCell>
-                  <TableCell className="text-right"><Skeleton className="h-8 w-20 ml-auto rounded-md" /></TableCell>
+                  <TableCell className="text-right"><Skeleton className="h-8 w-28 ml-auto rounded-md" /></TableCell>
                 </TableRow>
               ))
             ) : data?.purchaseOrders.length === 0 ? (
@@ -109,6 +124,7 @@ export default function PurchaseOrdersPage() {
             ) : (
               data?.purchaseOrders.map((po) => {
                 const canAccept = po.direction === "inbound" && po.status === "pending";
+                const canDownloadCsv = po.direction === "outbound";
                 const isAccepting = acknowledgeMutation.isPending && acknowledgeMutation.variables === po.id;
                 const justAccepted = acknowledgedIds.has(po.id);
 
@@ -132,14 +148,14 @@ export default function PurchaseOrdersPage() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      {po.shipDate ? new Date(po.shipDate).toLocaleDateString() : <span className="text-muted-foreground">TBD</span>}
+                      {po.shipDate
+                        ? new Date(po.shipDate).toLocaleDateString()
+                        : <span className="text-muted-foreground">TBD</span>}
                     </TableCell>
                     <TableCell className="font-mono">
-                      {po.totalAmount != null ? (
-                        new Intl.NumberFormat('en-US', { style: 'currency', currency: po.currency || 'USD' }).format(po.totalAmount)
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
+                      {po.totalAmount != null
+                        ? new Intl.NumberFormat("en-US", { style: "currency", currency: po.currency || "USD" }).format(po.totalAmount)
+                        : <span className="text-muted-foreground">-</span>}
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className={STATUS_COLORS[po.status] || "text-muted-foreground"}>
@@ -150,32 +166,36 @@ export default function PurchaseOrdersPage() {
                       {new Date(po.createdAt).toLocaleString()}
                     </TableCell>
                     <TableCell className="text-right">
-                      {canAccept && (
-                        <Button
-                          size="sm"
-                          variant="default"
-                          disabled={isAccepting || justAccepted}
-                          onClick={() => acknowledgeMutation.mutate(po.id)}
-                          className="gap-1.5"
-                        >
-                          {isAccepting ? (
-                            <>
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              Sending…
-                            </>
-                          ) : justAccepted ? (
-                            <>
-                              <CheckCheck className="h-3.5 w-3.5" />
-                              Sent
-                            </>
-                          ) : (
-                            <>
-                              <CheckCheck className="h-3.5 w-3.5" />
-                              Accept
-                            </>
-                          )}
-                        </Button>
-                      )}
+                      <div className="flex items-center justify-end gap-2">
+                        {canAccept && (
+                          <Button
+                            size="sm"
+                            variant="default"
+                            disabled={isAccepting || justAccepted}
+                            onClick={() => acknowledgeMutation.mutate(po.id)}
+                            className="gap-1.5"
+                          >
+                            {isAccepting ? (
+                              <><Loader2 className="h-3.5 w-3.5 animate-spin" />Sending…</>
+                            ) : justAccepted ? (
+                              <><CheckCheck className="h-3.5 w-3.5" />Sent</>
+                            ) : (
+                              <><CheckCheck className="h-3.5 w-3.5" />Accept</>
+                            )}
+                          </Button>
+                        )}
+                        {canDownloadCsv && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => downloadPoCsv(po.id, po.poNumber)}
+                            className="gap-1.5"
+                          >
+                            <FileDown className="h-3.5 w-3.5" />
+                            CSV
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
