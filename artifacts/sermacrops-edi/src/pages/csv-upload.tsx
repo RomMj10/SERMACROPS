@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useListPartners } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,28 +7,72 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Upload,
-  FileText,
-  Download,
-  CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  Loader2,
-  FileUp,
+  Upload, FileText, Download, CheckCircle2, XCircle,
+  AlertTriangle, Loader2, FileUp, Info,
 } from "lucide-react";
+
+interface DocTypeSpec {
+  code: string;
+  label: string;
+  description: string;
+  requiredHeaders: string[];
+  allHeaders: string[];
+  sampleRows: string[][];
+}
+
+const EDI_TYPES: Array<{ code: string; label: string }> = [
+  { code: "850", label: "Purchase Order" },
+  { code: "855", label: "PO Acknowledgment" },
+  { code: "856", label: "Advance Ship Notice" },
+  { code: "810", label: "Invoice" },
+  { code: "204", label: "Motor Carrier Load Tender" },
+  { code: "990", label: "Response to Load Tender" },
+];
+
+// Partner types that make sense per document type (inbound from their perspective)
+const PARTNER_TYPES_BY_DOC: Record<string, string[]> = {
+  "850": ["client"],
+  "855": ["supplier"],
+  "856": ["supplier"],
+  "810": ["client", "supplier"],
+  "204": ["logistics"],
+  "990": ["logistics"],
+};
 
 export default function CsvUploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [partnerId, setPartnerId] = useState("");
+  const [docType, setDocType] = useState("850");
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [specs, setSpecs] = useState<Record<string, DocTypeSpec>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
   const { data: partnersData, isLoading: isLoadingPartners } = useListPartners();
-  const clientPartners = partnersData?.partners?.filter((p) => p.type === "client") ?? [];
+
+  // Load specs from the API
+  useEffect(() => {
+    fetch("/api/edi/specs")
+      .then((r) => r.json())
+      .then((d) => setSpecs(d.specs || {}))
+      .catch(() => {});
+  }, []);
+
+  // Reset partner when doc type changes (filter may not include current partner)
+  useEffect(() => {
+    setPartnerId("");
+    setResult(null);
+  }, [docType]);
+
+  const allowedPartnerTypes = PARTNER_TYPES_BY_DOC[docType] || [];
+  const filteredPartners = partnersData?.partners?.filter(
+    (p) => allowedPartnerTypes.includes(p.type)
+  ) ?? [];
+
+  const currentSpec: DocTypeSpec | undefined = specs[docType];
 
   function handleFileChange(selected: File | null) {
     if (!selected) return;
@@ -43,8 +87,7 @@ export default function CsvUploadPage() {
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setIsDragging(false);
-    const dropped = e.dataTransfer.files[0];
-    if (dropped) handleFileChange(dropped);
+    handleFileChange(e.dataTransfer.files[0] ?? null);
   }
 
   async function handleUpload() {
@@ -56,6 +99,7 @@ export default function CsvUploadPage() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("partnerId", partnerId);
+      formData.append("transactionType", docType);
 
       const res = await fetch("/api/edi/upload", { method: "POST", body: formData });
       const data = await res.json();
@@ -63,7 +107,10 @@ export default function CsvUploadPage() {
       setResult({ ...data, httpStatus: res.status });
 
       if (res.ok && data.success) {
-        toast({ title: "EDI Processed", description: `${data.csvRowsProcessed} line item(s) processed successfully.` });
+        toast({
+          title: "EDI Processed",
+          description: `EDI ${docType} — ${data.csvRowsProcessed} row(s) processed successfully.`,
+        });
         queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
         queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
         queryClient.invalidateQueries({ queryKey: ["/api/dashboard/summary"] });
@@ -82,8 +129,10 @@ export default function CsvUploadPage() {
   }
 
   function downloadTemplate() {
-    window.open("/api/edi/template/850", "_blank");
+    window.open(`/api/edi/template/${docType}`, "_blank");
   }
+
+  const docTypeInfo = EDI_TYPES.find((t) => t.code === docType);
 
   return (
     <div className="space-y-6">
@@ -91,7 +140,7 @@ export default function CsvUploadPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">CSV Upload</h1>
           <p className="text-muted-foreground mt-1">
-            Upload a purchase order CSV from a trading partner. It will be converted to ANSI X12 EDI and processed.
+            Upload a trading partner CSV. It will be converted to ANSI X12 EDI and processed.
           </p>
         </div>
         <Button variant="outline" onClick={downloadTemplate} className="gap-2">
@@ -105,29 +154,87 @@ export default function CsvUploadPage() {
         {/* ── Upload card ── */}
         <Card className="border-border">
           <CardHeader>
-            <CardTitle>Upload Purchase Order CSV</CardTitle>
+            <CardTitle>Upload EDI CSV</CardTitle>
             <CardDescription>
-              CSV is converted to ANSI X12 EDI 850 and validated before processing.
+              Select the document type, then upload the corresponding CSV file.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
 
-            {/* Partner selector */}
+            {/* Document type */}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Trading Partner (Sender)</label>
-              <Select value={partnerId} onValueChange={setPartnerId} disabled={isLoadingPartners}>
+              <label className="text-sm font-medium">EDI Document Type</label>
+              <Select value={docType} onValueChange={setDocType}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select the partner sending this PO" />
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {clientPartners.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.name} ({p.id})
+                  {EDI_TYPES.map((t) => (
+                    <SelectItem key={t.code} value={t.code}>
+                      <span className="font-mono font-semibold mr-2">{t.code}</span>
+                      {t.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {currentSpec && (
+                <p className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Info className="h-3 w-3 shrink-0" />
+                  {currentSpec.description}
+                </p>
+              )}
             </div>
+
+            {/* Partner selector — filtered by doc type */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Trading Partner (Sender)</label>
+              <Select value={partnerId} onValueChange={setPartnerId} disabled={isLoadingPartners}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select the partner sending this document" />
+                </SelectTrigger>
+                <SelectContent>
+                  {filteredPartners.length === 0 ? (
+                    <SelectItem value="__none" disabled>
+                      No partners for this document type
+                    </SelectItem>
+                  ) : (
+                    filteredPartners.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                        <span className="ml-2 text-xs text-muted-foreground capitalize">({p.type})</span>
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Dynamic column reference */}
+            {currentSpec && (
+              <div className="bg-secondary/40 rounded-md p-3 space-y-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-foreground">
+                  Required columns for EDI {docType}
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {currentSpec.allHeaders.map((h) => (
+                    <span
+                      key={h}
+                      className={[
+                        "text-[11px] font-mono px-2 py-0.5 rounded border",
+                        currentSpec.requiredHeaders.includes(h)
+                          ? "bg-primary/10 border-primary/40 text-primary font-semibold"
+                          : "bg-secondary border-border text-muted-foreground",
+                      ].join(" ")}
+                    >
+                      {h}
+                    </span>
+                  ))}
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  <span className="text-primary font-semibold">Bold</span> = required &nbsp;·&nbsp; others optional
+                </p>
+              </div>
+            )}
 
             {/* Drop zone */}
             <div
@@ -167,14 +274,6 @@ export default function CsvUploadPage() {
               )}
             </div>
 
-            {/* Format reference */}
-            <div className="bg-secondary/40 rounded-md p-3 text-xs font-mono text-muted-foreground space-y-1">
-              <p className="text-foreground font-semibold text-[11px] uppercase tracking-wide mb-2">Expected columns</p>
-              <p>po_number, partner_id, ship_date</p>
-              <p>product_id, description, quantity</p>
-              <p>unit_price, uom</p>
-            </div>
-
             <Button
               className="w-full gap-2"
               disabled={!file || !partnerId || isUploading}
@@ -183,7 +282,7 @@ export default function CsvUploadPage() {
               {isUploading ? (
                 <><Loader2 className="h-4 w-4 animate-spin" /> Processing…</>
               ) : (
-                <><Upload className="h-4 w-4" /> Convert & Process</>
+                <><Upload className="h-4 w-4" /> Convert &amp; Process</>
               )}
             </Button>
           </CardContent>
@@ -198,7 +297,7 @@ export default function CsvUploadPage() {
             </CardTitle>
             <CardDescription>ANSI X12 validation and EDI routing outcome</CardDescription>
           </CardHeader>
-          <CardContent className="flex-1">
+          <CardContent className="flex-1 overflow-y-auto">
             {!result ? (
               <div className="h-48 flex items-center justify-center text-muted-foreground text-sm">
                 Upload a CSV to see the result
@@ -208,14 +307,14 @@ export default function CsvUploadPage() {
 
                 {/* Status banner */}
                 <div className={[
-                  "flex items-center gap-3 rounded-lg p-4 border",
+                  "flex items-start gap-3 rounded-lg p-4 border",
                   result.success
                     ? "bg-emerald-50 border-emerald-300 text-emerald-800"
                     : "bg-red-50 border-red-300 text-red-800",
                 ].join(" ")}>
                   {result.success
-                    ? <CheckCircle2 className="h-5 w-5 shrink-0" />
-                    : <XCircle className="h-5 w-5 shrink-0" />}
+                    ? <CheckCircle2 className="h-5 w-5 shrink-0 mt-0.5" />
+                    : <XCircle className="h-5 w-5 shrink-0 mt-0.5" />}
                   <div>
                     <p className="font-semibold">{result.success ? "Success" : "Failed"}</p>
                     <p className="text-sm">{result.message}</p>
@@ -226,10 +325,19 @@ export default function CsvUploadPage() {
                 {result.success && (
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div className="bg-secondary/40 rounded-md p-3">
-                      <p className="text-muted-foreground text-xs uppercase tracking-wide">Lines Processed</p>
-                      <p className="font-bold text-xl mt-0.5">{result.csvRowsProcessed ?? "—"}</p>
+                      <p className="text-muted-foreground text-xs uppercase tracking-wide">Document Type</p>
+                      <p className="font-bold text-lg mt-0.5">
+                        {result.transactionType}
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">
+                          {docTypeInfo?.label}
+                        </span>
+                      </p>
                     </div>
                     <div className="bg-secondary/40 rounded-md p-3">
+                      <p className="text-muted-foreground text-xs uppercase tracking-wide">Rows Processed</p>
+                      <p className="font-bold text-lg mt-0.5">{result.csvRowsProcessed ?? "—"}</p>
+                    </div>
+                    <div className="col-span-2 bg-secondary/40 rounded-md p-3">
                       <p className="text-muted-foreground text-xs uppercase tracking-wide">Transaction ID</p>
                       <p className="font-mono text-xs mt-1 break-all">{result.transactionId ?? "—"}</p>
                     </div>
@@ -260,10 +368,10 @@ export default function CsvUploadPage() {
                         Generated ANSI X12 EDI
                       </p>
                       <Badge variant="outline" className="text-emerald-700 border-emerald-400/60 bg-emerald-50 text-xs">
-                        X12 005010
+                        X12 005010 ✓
                       </Badge>
                     </div>
-                    <pre className="bg-secondary/40 border border-border rounded-md p-3 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed max-h-56 overflow-y-auto">
+                    <pre className="bg-secondary/40 border border-border rounded-md p-3 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed max-h-64 overflow-y-auto">
                       {result.generatedEdi}
                     </pre>
                   </div>

@@ -8,6 +8,30 @@ import type { ParsedEdiDocument } from "./parser";
 
 const SERMACROPS_ID = "SERMACROPS";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function enrichTransaction(
+  transactionId: string,
+  status: string,
+  enrichment: Record<string, unknown>
+): Promise<void> {
+  const db = await getDb();
+  await db.collection("transactions").updateOne(
+    { _id: new ObjectId(transactionId) },
+    {
+      $set: {
+        status,
+        updatedAt: new Date(),
+        ...Object.fromEntries(
+          Object.entries(enrichment).map(([k, v]) => [`parsedJson.${k}`, v])
+        ),
+      },
+    }
+  );
+}
+
 async function recordOutbound(
   transactionType: string,
   partnerId: string,
@@ -34,7 +58,7 @@ async function recordOutbound(
   });
 }
 
-async function sendToParter(
+async function sendToPartner(
   transactionType: string,
   partnerId: string,
   rawEdi: string
@@ -51,89 +75,139 @@ async function sendToParter(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 850 – Purchase Order
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function handle850(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
   const log = logger.child({ handler: "850", transactionId });
   const summary = parsed.summary as {
     purchaseOrderNumber?: string;
-    lineItems?: Array<{ productId: string; description: string; quantity: number; unitPrice: number; uom: string }>;
+    purchaseOrderDate?: string;
+    lineItems?: Array<{ lineNumber?: number; productId: string; description: string; quantity: number; unitPrice: number; uom: string }>;
     totalAmount?: string;
+    lineCount?: number;
   };
 
-  const cn = transactionId.slice(-9).padStart(9, "0");
-
-  const db = await getDb();
-  const poCol = db.collection("purchase_orders");
-  const txCol = db.collection("transactions");
+  const cn  = transactionId.slice(-9).padStart(9, "0");
+  const db  = await getDb();
   const now = new Date();
+  const poCol  = db.collection("purchase_orders");
 
-  const poNumber = summary.purchaseOrderNumber || `PO${cn}`;
+  const poNumber    = summary.purchaseOrderNumber || `PO${cn}`;
+  const totalAmount = parseFloat(summary.totalAmount || "0") || 0;
+
+  // Create inbound PO record
   const existing = await poCol.findOne({ poNumber });
+  let poId: string | undefined;
   if (!existing) {
-    await poCol.insertOne({
+    const ins = await poCol.insertOne({
       poNumber,
       direction: "inbound",
       partnerId: parsed.senderId,
       partnerName: PARTNERS[parsed.senderId]?.name || parsed.senderId,
       status: "pending",
-      totalAmount: summary.totalAmount || "0",
+      totalAmount,
       currency: "USD",
       items: summary.lineItems || [],
+      purchaseOrderDate: summary.purchaseOrderDate,
       createdAt: now,
       updatedAt: now,
     });
+    poId = ins.insertedId.toHexString();
+  } else {
+    poId = (existing._id as ObjectId).toHexString();
   }
 
-  await txCol.updateOne(
-    { _id: new ObjectId(transactionId) },
-    { $set: { status: "processed", updatedAt: now } }
-  );
+  // Enrich the inbound transaction with full PO content
+  await enrichTransaction(transactionId, "processed", {
+    poNumber,
+    poId,
+    purchaseOrderDate: summary.purchaseOrderDate,
+    lineItems: summary.lineItems || [],
+    lineCount: summary.lineCount || (summary.lineItems?.length ?? 0),
+    totalAmount,
+    currency: "USD",
+    senderId: parsed.senderId,
+    receiverId: parsed.receiverId,
+    action: "inbound_po_created",
+  });
 
-  log.info("EDI 850 processed — PO created, awaiting manual acknowledgment");
+  log.info({ poNumber, poId }, "EDI 850 processed — inbound PO created");
 
+  // Generate outbound 850 to supplier
   const supplierPartner = Object.values(PARTNERS).find((p) => p.type === "supplier");
   if (supplierPartner) {
     const cn850 = `${transactionId.slice(-6)}2000`.padStart(9, "0");
+    const spPoNumber = `SPO${cn}`;
+
+    const outboundItems = summary.lineItems?.map((item) => ({
+      productId: item.productId,
+      description: item.description,
+      quantity: Math.ceil(item.quantity * 1.05), // 5% buffer
+      unitPrice: 0,
+      uom: item.uom,
+    })) || [];
+
     const edi850Out = generateEdi("850", SERMACROPS_ID, supplierPartner.ediId, cn850, {
-      poNumber: `SPO${cn}`,
-      items: summary.lineItems?.map((item) => ({
-        productId: item.productId,
-        description: item.description,
-        quantity: item.quantity * 1.05,
-        unitPrice: 0,
-      })) || [],
+      poNumber: spPoNumber,
+      items: outboundItems,
     });
 
-    const spExisting = await poCol.findOne({ poNumber: `SPO${cn}` });
+    const spExisting = await poCol.findOne({ poNumber: spPoNumber });
     if (!spExisting) {
       await poCol.insertOne({
-        poNumber: `SPO${cn}`,
+        poNumber: spPoNumber,
         direction: "outbound",
         partnerId: supplierPartner.id,
         partnerName: supplierPartner.name,
         status: "pending",
-        totalAmount: "0",
+        totalAmount: 0,
         currency: "USD",
-        items: summary.lineItems || [],
+        items: outboundItems,
+        relatedPoNumber: poNumber,
         createdAt: now,
         updatedAt: now,
       });
     }
 
     await recordOutbound("850", supplierPartner.id, supplierPartner.name, cn850, edi850Out, {
-      poNumber: `SPO${cn}`,
+      poNumber: spPoNumber,
+      relatedInboundPo: poNumber,
+      lineItems: outboundItems,
+      lineCount: outboundItems.length,
+      totalAmount: 0,
+      currency: "USD",
+      action: "outbound_supplier_po",
     });
-    await sendToParter("850", supplierPartner.id, edi850Out);
 
-    log.info("EDI 850 sent to supplier partner");
+    await sendToPartner("850", supplierPartner.id, edi850Out);
+    log.info({ spPoNumber }, "Outbound EDI 850 sent to supplier");
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 855 – PO Acknowledgment
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function handle855(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
   const log = logger.child({ handler: "855", transactionId });
-  const summary = parsed.summary as { purchaseOrderNumber?: string; acknowledgeCode?: string };
+  const summary = parsed.summary as {
+    purchaseOrderNumber?: string;
+    acknowledgeCode?: string;
+    date?: string;
+  };
 
-  const db = await getDb();
+  const db  = await getDb();
   const now = new Date();
+
+  const ackCodeLabels: Record<string, string> = {
+    AC: "Accepted",
+    AW: "Accepted with Changes",
+    RD: "Rejected",
+    RJ: "Rejected",
+  };
+  const ackLabel = ackCodeLabels[summary.acknowledgeCode?.toUpperCase() || ""] || summary.acknowledgeCode || "Unknown";
 
   if (summary.purchaseOrderNumber) {
     await db.collection("purchase_orders").updateOne(
@@ -142,101 +216,179 @@ export async function handle855(parsed: ParsedEdiDocument, transactionId: string
     );
   }
 
-  await db.collection("transactions").updateOne(
-    { _id: new ObjectId(transactionId) },
-    { $set: { status: "acknowledged", updatedAt: now } }
-  );
+  await enrichTransaction(transactionId, "acknowledged", {
+    poNumber: summary.purchaseOrderNumber,
+    acknowledgeCode: summary.acknowledgeCode,
+    acknowledgeLabel: ackLabel,
+    date: summary.date,
+    senderId: parsed.senderId,
+    action: "po_acknowledged",
+  });
 
-  log.info({ poNumber: summary.purchaseOrderNumber }, "EDI 855 processed — PO acknowledged");
+  log.info({ poNumber: summary.purchaseOrderNumber, ackLabel }, "EDI 855 processed — PO acknowledged");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 856 – Advance Ship Notice
+// ─────────────────────────────────────────────────────────────────────────────
 
 export async function handle856(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
   const log = logger.child({ handler: "856", transactionId });
-  const cn = transactionId.slice(-6).padStart(9, "0");
+  const summary = parsed.summary as {
+    shipmentId?: string;
+    shipDate?: string;
+    hierarchicalLevels?: number;
+  };
 
-  const db = await getDb();
+  const cn  = transactionId.slice(-6).padStart(9, "0");
+  const db  = await getDb();
   const now = new Date();
 
-  await db.collection("transactions").updateOne(
-    { _id: new ObjectId(transactionId) },
-    { $set: { status: "processed", updatedAt: now } }
-  );
+  await enrichTransaction(transactionId, "processed", {
+    shipmentId: summary.shipmentId,
+    shipDate: summary.shipDate,
+    hierarchicalLevels: summary.hierarchicalLevels,
+    senderId: parsed.senderId,
+    action: "shipment_noticed",
+  });
 
-  const partner = Object.values(PARTNERS).find((p) => p.type === "logistics");
-  if (partner) {
-    const edi204 = generateEdi("204", SERMACROPS_ID, partner.ediId, cn, {
-      shipmentId: `SHP${cn}`,
+  // Trigger load tender to logistics partner
+  const logisticsPartner = Object.values(PARTNERS).find((p) => p.type === "logistics");
+  if (logisticsPartner) {
+    const edi204 = generateEdi("204", SERMACROPS_ID, logisticsPartner.ediId, cn, {
+      shipmentId: summary.shipmentId || `SHP${cn}`,
     });
-
-    await recordOutbound("204", partner.id, partner.name, cn, edi204, { shipmentId: `SHP${cn}` });
-    await sendToParter("204", partner.id, edi204);
-    log.info("EDI 204 sent to logistics provider");
+    await recordOutbound("204", logisticsPartner.id, logisticsPartner.name, cn, edi204, {
+      shipmentId: summary.shipmentId || `SHP${cn}`,
+      action: "load_tender_sent",
+    });
+    await sendToPartner("204", logisticsPartner.id, edi204);
+    log.info({ shipmentId: summary.shipmentId }, "EDI 204 sent to logistics provider");
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 810 – Invoice
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function handle810(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
   const log = logger.child({ handler: "810", transactionId });
-  const summary = parsed.summary as { purchaseOrderNumber?: string; invoiceNumber?: string; totalAmount?: string };
+  const summary = parsed.summary as {
+    invoiceNumber?: string;
+    invoiceDate?: string;
+    purchaseOrderNumber?: string;
+    totalAmount?: string;
+  };
 
-  const db = await getDb();
+  const db  = await getDb();
   const now = new Date();
+  const totalAmount = parseFloat((summary.totalAmount || "0").replace(/^0+/, "") || "0") / 100;
 
   if (summary.purchaseOrderNumber) {
     await db.collection("purchase_orders").updateOne(
       { poNumber: summary.purchaseOrderNumber },
-      { $set: { status: "invoiced", updatedAt: now } }
+      {
+        $set: {
+          status: "invoiced",
+          invoiceNumber: summary.invoiceNumber,
+          invoiceDate: summary.invoiceDate,
+          invoicedAmount: totalAmount,
+          updatedAt: now,
+        },
+      }
     );
   }
 
-  await db.collection("transactions").updateOne(
-    { _id: new ObjectId(transactionId) },
-    { $set: { status: "processed", updatedAt: now } }
-  );
+  await enrichTransaction(transactionId, "processed", {
+    invoiceNumber: summary.invoiceNumber,
+    invoiceDate: summary.invoiceDate,
+    poNumber: summary.purchaseOrderNumber,
+    totalAmount,
+    currency: "USD",
+    senderId: parsed.senderId,
+    action: "invoice_received",
+  });
 
-  log.info({ invoiceNumber: summary.invoiceNumber }, "EDI 810 processed — invoice recorded");
+  log.info({ invoiceNumber: summary.invoiceNumber, totalAmount }, "EDI 810 processed — invoice recorded");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 204 – Motor Carrier Load Tender
+// ─────────────────────────────────────────────────────────────────────────────
 
 export async function handle204(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
   const log = logger.child({ handler: "204", transactionId });
-  const db = await getDb();
-  const now = new Date();
+  const summary = parsed.summary as {
+    shipmentId?: string;
+    carrierAlpha?: string;
+    referencePairs?: Array<{ ref: string; qualifier: string }>;
+  };
 
-  await db.collection("transactions").updateOne(
-    { _id: new ObjectId(transactionId) },
-    { $set: { status: "processed", updatedAt: now } }
-  );
-  log.info("EDI 204 processed — load tender sent");
+  const poRef = summary.referencePairs?.find((p) => p.qualifier === "PO")?.ref;
+
+  await enrichTransaction(transactionId, "processed", {
+    shipmentId: summary.shipmentId,
+    carrierCode: summary.carrierAlpha,
+    poReference: poRef,
+    referencePairs: summary.referencePairs || [],
+    senderId: parsed.senderId,
+    action: "load_tender_sent",
+  });
+
+  log.info({ shipmentId: summary.shipmentId }, "EDI 204 processed — load tender");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 990 – Response to Load Tender
+// ─────────────────────────────────────────────────────────────────────────────
 
 export async function handle990(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
   const log = logger.child({ handler: "990", transactionId });
-  const cn = transactionId.slice(-6).padStart(9, "0");
+  const summary = parsed.summary as {
+    standardCarrierAlphaCode?: string;
+    shipmentId?: string;
+    date?: string;
+  };
 
-  const db = await getDb();
+  const cn  = transactionId.slice(-6).padStart(9, "0");
+  const db  = await getDb();
   const now = new Date();
 
-  await db.collection("transactions").updateOne(
-    { _id: new ObjectId(transactionId) },
-    { $set: { status: "acknowledged", updatedAt: now } }
-  );
+  await enrichTransaction(transactionId, "acknowledged", {
+    shipmentId: summary.shipmentId,
+    carrierCode: summary.standardCarrierAlphaCode,
+    responseDate: summary.date,
+    senderId: parsed.senderId,
+    action: "load_tender_accepted",
+  });
 
+  // Send ASN (856) + Invoice (810) to client
   const clientPartner = Object.values(PARTNERS).find((p) => p.type === "client");
   if (clientPartner) {
     const edi856 = generateEdi("856", SERMACROPS_ID, clientPartner.ediId, cn, {
       poNumber: "PO001",
       items: [{ productId: "COFFEE001", description: "Coffee Beans", quantity: 500 }],
     });
-    const edi810 = generateEdi("810", SERMACROPS_ID, clientPartner.ediId, String(Number(cn) + 1).padStart(9, "0"), {
+    const cn810 = String(Number(cn) + 1).padStart(9, "0");
+    const edi810 = generateEdi("810", SERMACROPS_ID, clientPartner.ediId, cn810, {
       poNumber: "PO001",
       invoiceNumber: `INV${cn}`,
       totalAmount: 2500,
       items: [{ productId: "COFFEE001", quantity: 500, unitPrice: 5.0 }],
     });
 
-    await recordOutbound("856", clientPartner.id, clientPartner.name, cn, edi856, {});
-    await recordOutbound("810", clientPartner.id, clientPartner.name, String(Number(cn) + 1).padStart(9, "0"), edi810, {});
-    await sendToParter("856", clientPartner.id, edi856);
-    await sendToParter("810", clientPartner.id, edi810);
-    log.info("EDI 856 and 810 sent to Coffee Shop client");
+    await recordOutbound("856", clientPartner.id, clientPartner.name, cn, edi856, {
+      shipmentId: summary.shipmentId,
+      action: "asn_sent_to_client",
+    });
+    await recordOutbound("810", clientPartner.id, clientPartner.name, cn810, edi810, {
+      invoiceNumber: `INV${cn}`,
+      totalAmount: 2500,
+      currency: "USD",
+      action: "invoice_sent_to_client",
+    });
+    await sendToPartner("856", clientPartner.id, edi856);
+    await sendToPartner("810", clientPartner.id, edi810);
+    log.info("EDI 856 and 810 sent to client after load tender accepted");
   }
 }

@@ -2,7 +2,14 @@ import { Router } from "express";
 import multer from "multer";
 import { routeEdiDocument } from "../edi/router";
 import { generateEdi } from "../edi/parser";
-import { parseCsv, csvToEdi850, validateAnsiX12, getInbound850CsvTemplate } from "../edi/csvConverter";
+import {
+  parseCsv,
+  csvToEdi,
+  validateAnsiX12,
+  getCsvTemplate,
+  DOC_TYPE_SPECS,
+  type EdiDocType,
+} from "../edi/csvConverter";
 import { PARTNERS } from "../edi/config";
 import { logger } from "../lib/logger";
 import {
@@ -12,19 +19,34 @@ import {
 
 const router = Router();
 
-// In-memory storage — we only need the buffer, not disk files
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
 
-// ─── CSV upload endpoint (replaces raw EDI ingest) ───────────────────────────
+const KNOWN_DOC_TYPES: EdiDocType[] = ["850", "855", "856", "810", "204", "990"];
+
+// ─── CSV upload (main inbound endpoint) ──────────────────────────────────────
 
 router.post("/edi/upload", upload.single("file"), async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ error: "bad_request", message: "No CSV file uploaded. Use field name 'file'." });
+    return res.status(400).json({
+      error: "bad_request",
+      message: "No CSV file uploaded. Use multipart field name 'file'.",
+    });
   }
 
   const partnerId: string = (req.body?.partnerId || "").trim();
   if (!partnerId) {
-    return res.status(400).json({ error: "bad_request", message: "partnerId is required in the form body." });
+    return res.status(400).json({ error: "bad_request", message: "partnerId is required." });
+  }
+
+  const docType = (req.body?.transactionType || "850").trim() as EdiDocType;
+  if (!KNOWN_DOC_TYPES.includes(docType)) {
+    return res.status(400).json({
+      error: "bad_request",
+      message: `Unknown transaction type "${docType}". Supported: ${KNOWN_DOC_TYPES.join(", ")}`,
+    });
   }
 
   const partner = PARTNERS[partnerId];
@@ -48,7 +70,7 @@ router.post("/edi/upload", upload.single("file"), async (req, res) => {
 
   let rawEdi: string;
   try {
-    rawEdi = csvToEdi850(rows, partnerId, "SERMACROPS", cn);
+    rawEdi = csvToEdi(rows, docType, partnerId, "SERMACROPS", cn);
   } catch (err) {
     return res.status(422).json({
       error: "csv_conversion_error",
@@ -65,7 +87,10 @@ router.post("/edi/upload", upload.single("file"), async (req, res) => {
     });
   }
 
-  logger.info({ partnerId, rowCount: rows.length, cn }, "CSV uploaded and converted to ANSI X12 EDI 850");
+  logger.info(
+    { partnerId, docType, rowCount: rows.length, cn },
+    `CSV uploaded and converted to ANSI X12 EDI ${docType}`
+  );
 
   const result = await routeEdiDocument(rawEdi);
 
@@ -77,16 +102,30 @@ router.post("/edi/upload", upload.single("file"), async (req, res) => {
   });
 });
 
-// ─── Download inbound CSV template ───────────────────────────────────────────
+// ─── Per-type CSV template download ──────────────────────────────────────────
 
-router.get("/edi/template/850", (req, res) => {
-  const csv = getInbound850CsvTemplate();
+router.get("/edi/template/:docType", (req, res) => {
+  const docType = req.params.docType as EdiDocType;
+  if (!KNOWN_DOC_TYPES.includes(docType)) {
+    return res.status(404).json({ error: "not_found", message: `No template for type "${docType}"` });
+  }
+  const spec = DOC_TYPE_SPECS[docType];
+  const csv  = getCsvTemplate(docType);
   res.setHeader("Content-Type", "text/csv");
-  res.setHeader("Content-Disposition", 'attachment; filename="sermacrops_850_template.csv"');
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="sermacrops_${docType}_${spec.label.replace(/\s+/g, "_").toLowerCase()}_template.csv"`
+  );
   return res.send(csv);
 });
 
-// ─── Legacy simulate endpoint (kept for internal dev/testing) ────────────────
+// ─── Spec metadata (used by the frontend to render dynamic column hints) ─────
+
+router.get("/edi/specs", (req, res) => {
+  return res.json({ specs: DOC_TYPE_SPECS });
+});
+
+// ─── Legacy simulate endpoint (kept for dev / testing) ───────────────────────
 
 router.post("/edi/simulate/:transactionType", async (req, res) => {
   const paramsResult = SimulateEdiTransactionParams.safeParse(req.params);

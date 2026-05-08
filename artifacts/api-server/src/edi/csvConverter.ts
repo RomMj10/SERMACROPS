@@ -1,23 +1,106 @@
 /**
  * CSV ↔ ANSI X12 EDI converter for SERMACROPS
  *
- * Inbound CSV format (850 Purchase Order from client):
- *   po_number, partner_id, ship_date, product_id, description, quantity, unit_price, uom
- *
- * Outbound CSV format (850 Purchase Order to supplier):
- *   sermacrops_po, supplier_id, supplier_name, product_id, description, quantity, uom, unit_price, requested_date
+ * Supports all 6 document types:
+ *   850  Purchase Order
+ *   855  PO Acknowledgment
+ *   856  Advance Ship Notice
+ *   810  Invoice
+ *   204  Motor Carrier Load Tender
+ *   990  Response to Load Tender
  */
 
 const ELEMENT_SEP = "*";
 const SEGMENT_SEP = "~";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CSV PARSING
+// TYPES
 // ─────────────────────────────────────────────────────────────────────────────
+
+export type EdiDocType = "850" | "855" | "856" | "810" | "204" | "990";
 
 export interface CsvRow {
   [key: string]: string;
 }
+
+export interface DocTypeSpec {
+  code: EdiDocType;
+  label: string;
+  description: string;
+  requiredHeaders: string[];
+  allHeaders: string[];
+  sampleRows: string[][];
+}
+
+export const DOC_TYPE_SPECS: Record<EdiDocType, DocTypeSpec> = {
+  "850": {
+    code: "850",
+    label: "Purchase Order",
+    description: "Inbound order from a client (e.g., Coffee Shop)",
+    requiredHeaders: ["po_number", "product_id", "quantity"],
+    allHeaders: ["po_number", "partner_id", "ship_date", "product_id", "description", "quantity", "unit_price", "uom"],
+    sampleRows: [
+      ["PO12345", "COFFEESHOP", "2026-07-01", "COFFEE001", "Arabica Coffee Beans", "500", "5.00", "LB"],
+      ["PO12345", "COFFEESHOP", "2026-07-01", "COFFEE002", "Robusta Coffee Beans", "300", "3.50", "LB"],
+    ],
+  },
+  "855": {
+    code: "855",
+    label: "PO Acknowledgment",
+    description: "Acknowledge or reject a purchase order",
+    requiredHeaders: ["po_number", "acknowledge_code"],
+    allHeaders: ["po_number", "partner_id", "acknowledge_code", "date"],
+    sampleRows: [
+      ["PO12345", "COFFEESHOP", "AC", "2026-07-01"],
+    ],
+  },
+  "856": {
+    code: "856",
+    label: "Advance Ship Notice",
+    description: "Notify a partner that a shipment is on its way",
+    requiredHeaders: ["shipment_id", "po_number", "product_id", "quantity"],
+    allHeaders: ["shipment_id", "partner_id", "po_number", "ship_date", "product_id", "description", "quantity", "uom"],
+    sampleRows: [
+      ["SHP001", "COFFEESHOP", "PO12345", "2026-07-02", "COFFEE001", "Arabica Coffee Beans", "500", "LB"],
+      ["SHP001", "COFFEESHOP", "PO12345", "2026-07-02", "COFFEE002", "Robusta Coffee Beans", "300", "LB"],
+    ],
+  },
+  "810": {
+    code: "810",
+    label: "Invoice",
+    description: "Bill a client for goods or services delivered",
+    requiredHeaders: ["invoice_number", "po_number", "product_id", "quantity", "unit_price"],
+    allHeaders: ["invoice_number", "partner_id", "invoice_date", "po_number", "product_id", "description", "quantity", "unit_price", "uom"],
+    sampleRows: [
+      ["INV001", "COFFEESHOP", "2026-07-05", "PO12345", "COFFEE001", "Arabica Coffee Beans", "500", "5.00", "LB"],
+      ["INV001", "COFFEESHOP", "2026-07-05", "PO12345", "COFFEE002", "Robusta Coffee Beans", "300", "3.50", "LB"],
+    ],
+  },
+  "204": {
+    code: "204",
+    label: "Motor Carrier Load Tender",
+    description: "Tender a shipment to a logistics carrier",
+    requiredHeaders: ["shipment_id", "po_number"],
+    allHeaders: ["shipment_id", "partner_id", "po_number", "pickup_date", "carrier_code"],
+    sampleRows: [
+      ["SHP001", "FASTLOGISTICS", "PO12345", "2026-07-03", "FLOG"],
+    ],
+  },
+  "990": {
+    code: "990",
+    label: "Response to Load Tender",
+    description: "Carrier's acceptance or rejection of a load tender",
+    requiredHeaders: ["shipment_id", "response_code"],
+    allHeaders: ["shipment_id", "partner_id", "response_code", "date"],
+    sampleRows: [
+      ["SHP001", "FASTLOGISTICS", "A", "2026-07-03"],
+    ],
+  },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CSV PARSING
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function parseCsv(text: string): CsvRow[] {
   const lines = text
@@ -54,15 +137,10 @@ function parseCsvLine(line: string): string[] {
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+      else { inQuotes = !inQuotes; }
     } else if (ch === "," && !inQuotes) {
-      result.push(current);
-      current = "";
+      result.push(current); current = "";
     } else {
       current += ch;
     }
@@ -71,18 +149,15 @@ function parseCsvLine(line: string): string[] {
   return result;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CSV VALIDATION
-// ─────────────────────────────────────────────────────────────────────────────
-
-const REQUIRED_850_HEADERS = ["po_number", "product_id", "quantity"];
-
-export function validateCsvHeaders(rows: CsvRow[]): void {
+export function validateCsvHeaders(rows: CsvRow[], docType: EdiDocType): void {
   if (rows.length === 0) throw new Error("CSV has no data rows.");
+  const spec = DOC_TYPE_SPECS[docType];
   const headers = Object.keys(rows[0]);
-  const missing = REQUIRED_850_HEADERS.filter((h) => !headers.includes(h));
+  const missing = spec.requiredHeaders.filter((h) => !headers.includes(h));
   if (missing.length > 0) {
-    throw new Error(`CSV is missing required columns: ${missing.join(", ")}`);
+    throw new Error(
+      `CSV for EDI ${docType} (${spec.label}) is missing required columns: ${missing.join(", ")}`
+    );
   }
 }
 
@@ -110,75 +185,52 @@ export function validateAnsiX12(rawEdi: string): X12ValidationResult {
 
   const ids = segments.map((s) => s.id);
 
-  // Required envelope segments
   if (!ids.includes("ISA")) errors.push("Missing ISA (interchange control header) segment.");
-  if (!ids.includes("GS")) errors.push("Missing GS (functional group header) segment.");
-  if (!ids.includes("ST")) errors.push("Missing ST (transaction set header) segment.");
-  if (!ids.includes("SE")) errors.push("Missing SE (transaction set trailer) segment.");
-  if (!ids.includes("GE")) errors.push("Missing GE (functional group trailer) segment.");
+  if (!ids.includes("GS"))  errors.push("Missing GS (functional group header) segment.");
+  if (!ids.includes("ST"))  errors.push("Missing ST (transaction set header) segment.");
+  if (!ids.includes("SE"))  errors.push("Missing SE (transaction set trailer) segment.");
+  if (!ids.includes("GE"))  errors.push("Missing GE (functional group trailer) segment.");
   if (!ids.includes("IEA")) errors.push("Missing IEA (interchange control trailer) segment.");
 
   if (errors.length > 0) return { valid: false, errors };
 
-  // ISA must have exactly 15 data elements (16 total with segment id)
   const isa = segments.find((s) => s.id === "ISA")!;
   if (isa.elements.length < 15) {
     errors.push(`ISA segment must have 15 data elements, found ${isa.elements.length}.`);
   }
 
-  // Control number consistency: ISA[12] must match IEA[1]
-  const isaControlNum = isa.elements[12];
   const iea = segments.find((s) => s.id === "IEA")!;
-  const ieaControlNum = iea.elements[1];
-  if (isaControlNum && ieaControlNum && isaControlNum.trim() !== ieaControlNum.trim()) {
-    errors.push(
-      `ISA/IEA control number mismatch: ISA has "${isaControlNum.trim()}", IEA has "${ieaControlNum.trim()}".`
-    );
+  if (isa.elements[12]?.trim() !== iea.elements[1]?.trim()) {
+    errors.push(`ISA/IEA control number mismatch: "${isa.elements[12]?.trim()}" vs "${iea.elements[1]?.trim()}".`);
   }
 
-  // GS[5] must match GE[1]
   const gs = segments.find((s) => s.id === "GS")!;
   const ge = segments.find((s) => s.id === "GE")!;
-  const gsControlNum = gs.elements[5];
-  const geControlNum = ge.elements[1];
-  if (gsControlNum && geControlNum && gsControlNum.trim() !== geControlNum.trim()) {
-    errors.push(
-      `GS/GE control number mismatch: GS has "${gsControlNum.trim()}", GE has "${geControlNum.trim()}".`
-    );
+  if (gs.elements[5]?.trim() !== ge.elements[1]?.trim()) {
+    errors.push(`GS/GE control number mismatch: "${gs.elements[5]?.trim()}" vs "${ge.elements[1]?.trim()}".`);
   }
 
-  // ST[1] must match SE[1]
   const st = segments.find((s) => s.id === "ST")!;
   const se = segments.find((s) => s.id === "SE")!;
-  const stControlNum = st.elements[1];
-  const seControlNum = se.elements[1];
-  if (stControlNum && seControlNum && stControlNum.trim() !== seControlNum.trim()) {
-    errors.push(
-      `ST/SE control number mismatch: ST has "${stControlNum.trim()}", SE has "${seControlNum.trim()}".`
-    );
+  if (st.elements[1]?.trim() !== se.elements[1]?.trim()) {
+    errors.push(`ST/SE control number mismatch: "${st.elements[1]?.trim()}" vs "${se.elements[1]?.trim()}".`);
   }
 
-  // SE[0] must equal segment count between ST and SE (inclusive)
   const stIdx = segments.findIndex((s) => s.id === "ST");
   const seIdx = segments.findIndex((s) => s.id === "SE");
   if (stIdx !== -1 && seIdx !== -1) {
-    const expectedCount = seIdx - stIdx + 1; // ST through SE inclusive
-    const seCount = parseInt(se.elements[0] || "0", 10);
-    if (seCount !== expectedCount) {
-      errors.push(
-        `SE segment count mismatch: SE declares ${seCount} segments, but found ${expectedCount} (ST to SE inclusive).`
-      );
+    const expected = seIdx - stIdx + 1;
+    const declared = parseInt(se.elements[0] || "0", 10);
+    if (declared !== expected) {
+      errors.push(`SE segment count mismatch: declared ${declared}, found ${expected} (ST to SE inclusive).`);
     }
   }
 
-  // ST[0] must be a recognised X12 transaction type
-  const transactionType = st.elements[0];
   const knownTypes = ["850", "855", "856", "810", "204", "990", "997", "824", "214"];
-  if (transactionType && !knownTypes.includes(transactionType)) {
-    errors.push(`Unknown ANSI X12 transaction set identifier "${transactionType}".`);
+  if (st.elements[0] && !knownTypes.includes(st.elements[0])) {
+    errors.push(`Unknown ANSI X12 transaction set identifier "${st.elements[0]}".`);
   }
 
-  // Verify ISA version is 00501 (X12 5010) or 00401 (X12 4010)
   const versionCode = isa.elements[11];
   if (versionCode && !["00501", "00401"].includes(versionCode)) {
     errors.push(`Unsupported X12 version "${versionCode}". Expected 00501 or 00401.`);
@@ -188,60 +240,228 @@ export function validateAnsiX12(rawEdi: string): X12ValidationResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CSV → EDI 850
+// HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function csvToEdi850(
+function buildEnvelope(
+  transactionType: string,
+  senderId: string,
+  receiverId: string,
+  cn: string,
+  bodySegments: string[]
+): string {
+  const date = new Date();
+  const dateStr = date.toISOString().slice(2, 10).replace(/-/g, "");
+  const timeStr = date.toISOString().slice(11, 16).replace(":", "");
+  const cnPad = cn.padStart(9, "0");
+
+  const functionalCodes: Record<string, string> = {
+    "850": "PO", "855": "PR", "856": "SH",
+    "810": "IN", "204": "SM", "990": "GF",
+  };
+  const fc = functionalCodes[transactionType] || "XX";
+
+  const segmentCount = 2 + bodySegments.length; // ST + body + SE (SE counts itself)
+
+  const allSegments = [
+    `ISA*00*          *00*          *ZZ*${senderId.padEnd(15)}*ZZ*${receiverId.padEnd(15)}*${dateStr}*${timeStr}*^*00501*${cnPad}*0*P*:`,
+    `GS*${fc}*${senderId}*${receiverId}*${dateStr}*${timeStr}*${cnPad}*X*005010`,
+    `ST*${transactionType}*${cnPad}`,
+    ...bodySegments,
+    `SE*${segmentCount}*${cnPad}`,
+    `GE*1*${cnPad}`,
+    `IEA*1*${cnPad}`,
+  ];
+
+  return allSegments.join(`${SEGMENT_SEP}\n`) + SEGMENT_SEP;
+}
+
+function toDateStr(iso?: string): string {
+  if (!iso) return new Date().toISOString().slice(2, 10).replace(/-/g, "");
+  return iso.replace(/-/g, "").slice(0, 8);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CSV → ANSI X12 CONVERTERS (per doc type)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function csvToEdi(
   rows: CsvRow[],
+  docType: EdiDocType,
   senderId: string,
   receiverId: string,
   controlNumber: string
 ): string {
-  validateCsvHeaders(rows);
+  validateCsvHeaders(rows, docType);
 
-  // Group rows by po_number (take first PO number from first row)
-  const poNumber = rows[0].po_number || `PO${controlNumber}`;
-  const shipDate = rows[0].ship_date || "";
+  switch (docType) {
+    case "850": return buildEdi850(rows, senderId, receiverId, controlNumber);
+    case "855": return buildEdi855(rows, senderId, receiverId, controlNumber);
+    case "856": return buildEdi856(rows, senderId, receiverId, controlNumber);
+    case "810": return buildEdi810(rows, senderId, receiverId, controlNumber);
+    case "204": return buildEdi204(rows, senderId, receiverId, controlNumber);
+    case "990": return buildEdi990(rows, senderId, receiverId, controlNumber);
+  }
+}
 
-  const date = new Date();
-  const dateStr = date.toISOString().slice(2, 10).replace(/-/g, "");
-  const timeStr = date.toISOString().slice(11, 16).replace(":", "");
-  const cn = controlNumber.padStart(9, "0");
+// 850 – Purchase Order
+function buildEdi850(rows: CsvRow[], senderId: string, receiverId: string, cn: string): string {
+  const poNumber = rows[0].po_number || `PO${cn}`;
+  const dateStr = toDateStr(rows[0].ship_date);
 
   const lineSegments = rows.map((row, i) => {
-    const qty = parseFloat(row.quantity || "0") || 0;
+    const qty   = parseFloat(row.quantity   || "0") || 0;
     const price = parseFloat(row.unit_price || "0") || 0;
-    const uom = (row.uom || "EA").toUpperCase();
-    const productId = row.product_id || `ITEM${i + 1}`;
-    const desc = row.description || productId;
-    return `PO1*${i + 1}*${qty}*${uom}*${price}*PE*VP*${productId}*PI*${desc}`;
+    const uom   = (row.uom         || "EA").toUpperCase();
+    const pid   = row.product_id   || `ITEM${i + 1}`;
+    const desc  = row.description  || pid;
+    return `PO1*${i + 1}*${qty}*${uom}*${price}*PE*VP*${pid}*PI*${desc}`;
   });
 
-  const totalAmount = rows.reduce((sum, row) => {
-    return sum + (parseFloat(row.quantity || "0") * parseFloat(row.unit_price || "0"));
-  }, 0);
+  const totalCents = rows.reduce(
+    (s, r) => s + parseFloat(r.quantity || "0") * parseFloat(r.unit_price || "0"), 0
+  );
 
-  const bodySegments = [
-    `BEG*00*NE*${poNumber}**${dateStr}`,
-    shipDate ? `DTM*002*${shipDate.replace(/-/g, "")}` : `DTM*002*${dateStr}`,
+  const body = [
+    `BEG*00*NE*${poNumber}**${toDateStr()}`,
+    `DTM*002*${dateStr}`,
     ...lineSegments,
-    `TDS*${Math.round(totalAmount * 100).toString().padStart(10, "0")}`,
+    `TDS*${Math.round(totalCents * 100).toString().padStart(10, "0")}`,
     `CTT*${rows.length}`,
   ];
 
-  const segmentCount = 2 + bodySegments.length; // ST + SE
+  return buildEnvelope("850", senderId, receiverId, cn, body);
+}
 
-  const allSegments = [
-    `ISA*00*          *00*          *ZZ*${senderId.padEnd(15)}*ZZ*${receiverId.padEnd(15)}*${dateStr}*${timeStr}*^*00501*${cn}*0*P*:`,
-    `GS*PO*${senderId}*${receiverId}*${dateStr}*${timeStr}*${cn}*X*005010`,
-    `ST*850*${cn}`,
-    ...bodySegments,
-    `SE*${segmentCount}*${cn}`,
-    `GE*1*${cn}`,
-    `IEA*1*${cn}`,
+// 855 – PO Acknowledgment
+function buildEdi855(rows: CsvRow[], senderId: string, receiverId: string, cn: string): string {
+  const row = rows[0];
+  const poNumber = row.po_number       || "PO001";
+  const ackCode  = (row.acknowledge_code || "AC").toUpperCase();
+  const dateStr  = toDateStr(row.date);
+
+  const body = [
+    `BAK*00*${ackCode}*${poNumber}*${dateStr}`,
+    `CTT*1`,
   ];
 
-  return allSegments.join(`${SEGMENT_SEP}\n`) + SEGMENT_SEP;
+  return buildEnvelope("855", senderId, receiverId, cn, body);
+}
+
+// 856 – Advance Ship Notice
+function buildEdi856(rows: CsvRow[], senderId: string, receiverId: string, cn: string): string {
+  const first      = rows[0];
+  const shipmentId = first.shipment_id || `SHP${cn}`;
+  const poNumber   = first.po_number   || "PO001";
+  const dateStr    = toDateStr(first.ship_date);
+  const timeStr    = new Date().toISOString().slice(11, 16).replace(":", "");
+
+  const itemSegments = rows.flatMap((row, i) => {
+    const pid = row.product_id  || `ITEM${i + 1}`;
+    const qty = parseFloat(row.quantity || "0") || 0;
+    const uom = (row.uom || "EA").toUpperCase();
+    const desc = row.description || pid;
+    return [
+      `HL*${i + 3}*2*I`,
+      `LIN*${i + 1}*VP*${pid}`,
+      `PID*F****${desc}`,
+      `SN1**${qty}*${uom}`,
+    ];
+  });
+
+  const body = [
+    `BSN*00*${shipmentId}*${dateStr}*${timeStr}`,
+    `HL*1**S`,
+    `TD5*B*2*${senderId}`,
+    `HL*2*1*O`,
+    `PRF*${poNumber}`,
+    ...itemSegments,
+    `CTT*${rows.length}`,
+  ];
+
+  return buildEnvelope("856", senderId, receiverId, cn, body);
+}
+
+// 810 – Invoice
+function buildEdi810(rows: CsvRow[], senderId: string, receiverId: string, cn: string): string {
+  const first      = rows[0];
+  const invNumber  = first.invoice_number || `INV${cn}`;
+  const poNumber   = first.po_number      || "PO001";
+  const invDate    = toDateStr(first.invoice_date);
+
+  const lineSegments = rows.map((row, i) => {
+    const pid   = row.product_id  || `ITEM${i + 1}`;
+    const qty   = parseFloat(row.quantity   || "0") || 0;
+    const price = parseFloat(row.unit_price || "0") || 0;
+    const uom   = (row.uom || "EA").toUpperCase();
+    const desc  = row.description || pid;
+    return `IT1*${i + 1}*${qty}*${uom}*${price}*PE*VP*${pid}*PI*${desc}`;
+  });
+
+  const totalCents = rows.reduce(
+    (s, r) => s + parseFloat(r.quantity || "0") * parseFloat(r.unit_price || "0"), 0
+  );
+
+  const body = [
+    `BIG*${invDate}*${invNumber}*${invDate}*${poNumber}`,
+    `N1*ST*${receiverId}*ZZ*${receiverId}`,
+    ...lineSegments,
+    `TDS*${Math.round(totalCents * 100).toString().padStart(10, "0")}`,
+    `CTT*${rows.length}`,
+  ];
+
+  return buildEnvelope("810", senderId, receiverId, cn, body);
+}
+
+// 204 – Motor Carrier Load Tender
+function buildEdi204(rows: CsvRow[], senderId: string, receiverId: string, cn: string): string {
+  const row        = rows[0];
+  const shipmentId = row.shipment_id  || `SHP${cn}`;
+  const poNumber   = row.po_number    || "PO001";
+  const pickupDate = toDateStr(row.pickup_date);
+  const carrier    = row.carrier_code || senderId;
+
+  const body = [
+    `B2**${carrier}***${shipmentId}*CC`,
+    `B2A*04`,
+    `L11*${poNumber}*PO`,
+    `G62*37*${pickupDate}`,
+    `AT5*AI*LT`,
+    `N1*SH*${senderId}*ZZ*${senderId}`,
+    `N1*CN*${receiverId}*ZZ*${receiverId}`,
+    `CTT*1`,
+  ];
+
+  return buildEnvelope("204", senderId, receiverId, cn, body);
+}
+
+// 990 – Response to Load Tender
+function buildEdi990(rows: CsvRow[], senderId: string, receiverId: string, cn: string): string {
+  const row          = rows[0];
+  const shipmentId   = row.shipment_id   || `SHP${cn}`;
+  const responseCode = (row.response_code || "A").toUpperCase();
+  const dateStr      = toDateStr(row.date);
+
+  const body = [
+    `B1*${senderId}*${shipmentId}*${dateStr}*${responseCode === "A" ? "M" : "R"}`,
+    `L11*${cn.padStart(9, "0")}*PO`,
+    `CTT*1`,
+  ];
+
+  return buildEnvelope("990", senderId, receiverId, cn, body);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CSV TEMPLATES
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function getCsvTemplate(docType: EdiDocType): string {
+  const spec = DOC_TYPE_SPECS[docType];
+  const lines = [
+    spec.allHeaders.join(","),
+    ...spec.sampleRows.map((r) => r.map(csvEscape).join(",")),
+  ];
+  return lines.join("\n");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -267,16 +487,9 @@ export interface SupplierPoData {
 
 export function generateSupplierPoCsv(po: SupplierPoData): string {
   const headers = [
-    "sermacrops_po",
-    "supplier_id",
-    "supplier_name",
-    "product_id",
-    "description",
-    "quantity",
-    "uom",
-    "unit_price",
-    "currency",
-    "requested_date",
+    "sermacrops_po", "supplier_id", "supplier_name",
+    "product_id", "description", "quantity", "uom",
+    "unit_price", "currency", "requested_date",
   ];
 
   const rows = po.items.map((item) => [
@@ -292,26 +505,10 @@ export function generateSupplierPoCsv(po: SupplierPoData): string {
     po.requestedDate || new Date().toISOString().slice(0, 10),
   ]);
 
-  const lines = [headers.join(","), ...rows.map((r) => r.map(csvEscape).join(","))];
-  return lines.join("\n");
+  return [headers.join(","), ...rows.map((r) => r.map(csvEscape).join(","))].join("\n");
 }
 
-/** Wrap a CSV field in quotes if it contains commas, quotes or newlines. */
 function csvEscape(value: string): string {
-  if (/[",\n\r]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
+  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
   return value;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CSV TEMPLATE (downloadable by the user)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export function getInbound850CsvTemplate(): string {
-  return [
-    "po_number,partner_id,ship_date,product_id,description,quantity,unit_price,uom",
-    "PO12345,COFFEESHOP,2026-07-01,COFFEE001,Arabica Coffee Beans,500,5.00,LB",
-    "PO12345,COFFEESHOP,2026-07-01,COFFEE002,Robusta Coffee Beans,300,3.50,LB",
-  ].join("\n");
 }
