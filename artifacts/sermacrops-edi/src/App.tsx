@@ -11,8 +11,12 @@ import PurchaseOrdersPage from "@/pages/purchase-orders";
 import InventoryPage from "@/pages/inventory";
 import PartnersPage from "@/pages/partners";
 import CsvUploadPage from "@/pages/csv-upload";
+import { setBaseUrl } from "@workspace/api-client-react";
 
 const queryClient = new QueryClient();
+
+//base URL for the API client
+setBaseUrl('http://localhost:8080');
 
 function Router() {
   return (

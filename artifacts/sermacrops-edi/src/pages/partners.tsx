@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Building2, Pencil, Save, X, Server, Mail } from "lucide-react";
 
@@ -21,6 +22,7 @@ interface Partner {
 
 interface EditState {
   name: string;
+  type: string;
   ediId: string;
   as2Id: string;
   email: string;
@@ -31,6 +33,7 @@ function PartnerRow({ partner, onSaved }: { partner: Partner; onSaved: () => voi
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<EditState>({
     name: partner.name,
+    type: partner.type,
     ediId: partner.ediId,
     as2Id: partner.as2Id ?? "",
     email: partner.email ?? "",
@@ -38,7 +41,7 @@ function PartnerRow({ partner, onSaved }: { partner: Partner; onSaved: () => voi
   const { toast } = useToast();
 
   function reset() {
-    setForm({ name: partner.name, ediId: partner.ediId, as2Id: partner.as2Id ?? "", email: partner.email ?? "" });
+    setForm({ name: partner.name, type: partner.type, ediId: partner.ediId, as2Id: partner.as2Id ?? "", email: partner.email ?? "" });
     setEditing(false);
   }
 
@@ -84,9 +87,6 @@ function PartnerRow({ partner, onSaved }: { partner: Partner; onSaved: () => voi
           ) : (
             <span className="font-semibold text-base">{partner.name}</span>
           )}
-          <Badge variant="outline" className={`capitalize text-xs ${typeColors[partner.type] || ""}`}>
-            {partner.type}
-          </Badge>
           {partner.isActive ? (
             <Badge variant="outline" className="text-green-600 border-green-400/50 bg-green-50 text-xs gap-1">
               <Server className="h-3 w-3" /> Active
@@ -116,7 +116,25 @@ function PartnerRow({ partner, onSaved }: { partner: Partner; onSaved: () => voi
       </div>
 
       {/* Fields grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-0 divide-y sm:divide-y-0 sm:divide-x divide-border/60">
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-0 divide-y sm:divide-y-0 sm:divide-x divide-border/60">
+        <Field label="Type" editing={editing}>
+          {editing ? (
+            <Select value={form.type} onValueChange={(value) => setForm((f) => ({ ...f, type: value }))}>
+              <SelectTrigger className="h-8 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="client">Client</SelectItem>
+                <SelectItem value="supplier">Supplier</SelectItem>
+                <SelectItem value="logistics">Logistics</SelectItem>
+              </SelectContent>
+            </Select>
+          ) : (
+            <Badge variant="outline" className={`capitalize text-xs ${typeColors[partner.type] || ""}`}>
+              {partner.type}
+            </Badge>
+          )}
+        </Field>
         <Field label="EDI ID" editing={editing}>
           {editing ? (
             <Input value={form.ediId} onChange={(e) => setForm((f) => ({ ...f, ediId: e.target.value }))} className="h-8 font-mono text-sm" />
