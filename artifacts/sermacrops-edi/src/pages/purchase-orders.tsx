@@ -213,7 +213,7 @@ export default function PurchaseOrdersPage() {
                             className="gap-1.5 text-emerald-700 border-emerald-400/60 bg-emerald-50 hover:bg-emerald-100"
                           >
                             <FileDown className="h-3.5 w-3.5" />
-                            855 CSV
+                            CSV
                           </Button>
                         )}
                       </div>
