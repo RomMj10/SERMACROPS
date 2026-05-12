@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useListInventory } from "@workspace/api-client-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -70,6 +70,11 @@ function buildOrderJson(lines: OrderLine[], supplier: string, poNumber: string, 
   };
 }
 
+interface SupplierOption {
+  id: string;
+  name: string;
+}
+
 function OrderDialog({
   open,
   onClose,
@@ -79,10 +84,27 @@ function OrderDialog({
   onClose: () => void;
   inventory: InventoryItem[];
 }) {
-  const [supplier, setSupplier] = useState("PHILHARVEST");
+  const [suppliers, setSuppliers] = useState<SupplierOption[]>([]);
+  const [supplier, setSupplier] = useState("");
   const [lines, setLines] = useState<OrderLine[]>([]);
   const [previewMode, setPreviewMode] = useState<PreviewMode>("json");
   const { toast } = useToast();
+
+  useEffect(() => {
+    if (!open) return;
+    fetch("/api/partners")
+      .then((r) => r.json())
+      .then((d) => {
+        const supplierPartners: SupplierOption[] = (d.partners || [])
+          .filter((p: any) => p.type === "supplier")
+          .map((p: any) => ({ id: p.id, name: p.name }));
+        setSuppliers(supplierPartners);
+        if (supplierPartners.length > 0 && !supplier) {
+          setSupplier(supplierPartners[0].id);
+        }
+      })
+      .catch(() => {});
+  }, [open]);
 
   const poNumber = `PO-${Date.now().toString().slice(-7)}`;
   const shipDate = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
@@ -137,19 +159,23 @@ function OrderDialog({
         </DialogHeader>
 
         <div className="space-y-5">
-          {/* Supplier select */}
+          {/* Supplier select — only supplier-type partners */}
           <div className="space-y-1.5">
             <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Supplier</Label>
-            <Select value={supplier} onValueChange={setSupplier}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="PHILHARVEST">PhilHarvest Supply Co.</SelectItem>
-                <SelectItem value="COFFEESHOP">The Coffee Shop</SelectItem>
-                <SelectItem value="FASTLOGISTICS">FastTrack Logistics</SelectItem>
-              </SelectContent>
-            </Select>
+            {suppliers.length === 0 ? (
+              <p className="text-sm text-muted-foreground italic">No supplier partners found. Add a supplier in the Partners page.</p>
+            ) : (
+              <Select value={supplier} onValueChange={setSupplier}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select a supplier…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {suppliers.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           {/* Low stock quick-add */}

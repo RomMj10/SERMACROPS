@@ -36,6 +36,15 @@ function downloadPoCsv(id: string, poNumber: string) {
   document.body.removeChild(a);
 }
 
+function download855Csv(id: string, poNumber: string) {
+  const a = document.createElement("a");
+  a.href = `/api/purchase-orders/${id}/855-csv`;
+  a.download = `${poNumber}_855_acknowledgment.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
 export default function PurchaseOrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [acknowledgedIds, setAcknowledgedIds] = useState<Set<string>>(new Set());
@@ -125,6 +134,7 @@ export default function PurchaseOrdersPage() {
               data?.purchaseOrders.map((po) => {
                 const canAccept = po.direction === "inbound" && po.status === "pending";
                 const canDownloadCsv = po.direction === "outbound";
+                const canDownload855 = po.direction === "inbound" && po.status === "acknowledged";
                 const isAccepting = acknowledgeMutation.isPending && acknowledgeMutation.variables === po.id;
                 const justAccepted = acknowledgedIds.has(po.id);
 
@@ -193,6 +203,17 @@ export default function PurchaseOrdersPage() {
                           >
                             <FileDown className="h-3.5 w-3.5" />
                             CSV
+                          </Button>
+                        )}
+                        {canDownload855 && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => download855Csv(po.id, po.poNumber)}
+                            className="gap-1.5 text-emerald-700 border-emerald-400/60 bg-emerald-50 hover:bg-emerald-100"
+                          >
+                            <FileDown className="h-3.5 w-3.5" />
+                            855 CSV
                           </Button>
                         )}
                       </div>

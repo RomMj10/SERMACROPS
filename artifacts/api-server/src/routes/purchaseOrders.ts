@@ -103,6 +103,87 @@ router.get("/purchase-orders/:id/csv", async (req, res) => {
   return res.send(csvData);
 });
 
+// ─── Download EDI 855 acknowledgment as CSV ──────────────────────────────────
+
+router.get("/purchase-orders/:id/855-csv", async (req, res) => {
+  const db = await getDb();
+  const poCol = db.collection("purchase_orders");
+  const txCol = db.collection("transactions");
+
+  if (!ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ error: "bad_request", message: "Invalid ID" });
+  }
+
+  const po = await poCol.findOne({ _id: new ObjectId(req.params.id) });
+  if (!po) return res.status(404).json({ error: "not_found", message: "Purchase order not found" });
+
+  if (po.status !== "acknowledged") {
+    return res.status(400).json({ error: "bad_request", message: "Purchase order has not been acknowledged yet." });
+  }
+
+  // Find the 855 transaction associated with this PO
+  const tx = await txCol.findOne({
+    transactionType: "855",
+    "parsedJson.purchaseOrderNumber": po.poNumber,
+  });
+
+  const acknowledgeCode = (tx?.parsedJson as any)?.acknowledgeCode || "AC";
+  const controlNumber = (tx?.controlNumber as string) || "";
+  const ackDate = tx ? new Date(tx.createdAt as Date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const items: Array<Record<string, unknown>> = (po.items as any[]) || [];
+
+  const header = [
+    "po_number",
+    "acknowledge_code",
+    "partner_id",
+    "partner_name",
+    "control_number",
+    "acknowledgment_date",
+    "transaction_type",
+    "product_id",
+    "description",
+    "quantity_ordered",
+    "uom",
+    "unit_price",
+  ].join(",");
+
+  const rows = items.length > 0
+    ? items.map((item) =>
+        [
+          po.poNumber,
+          acknowledgeCode,
+          po.partnerId,
+          po.partnerName || "",
+          controlNumber,
+          ackDate,
+          "855",
+          item.productId || "",
+          `"${String(item.description || item.productId || "").replace(/"/g, '""')}"`,
+          item.quantity || 0,
+          item.uom || "EA",
+          item.unitPrice || 0,
+        ].join(",")
+      )
+    : [
+        [
+          po.poNumber,
+          acknowledgeCode,
+          po.partnerId,
+          po.partnerName || "",
+          controlNumber,
+          ackDate,
+          "855",
+          "", "", "", "", "",
+        ].join(","),
+      ];
+
+  const csv = [header, ...rows].join("\n");
+  const filename = `${po.poNumber}_855_acknowledgment.csv`;
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  return res.send(csv);
+});
+
 // ─── Acknowledge an inbound PO (send EDI 855) ────────────────────────────────
 
 router.post("/purchase-orders/:id/acknowledge", async (req, res) => {

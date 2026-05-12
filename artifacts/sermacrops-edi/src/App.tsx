@@ -15,9 +15,6 @@ import { setBaseUrl } from "@workspace/api-client-react";
 
 const queryClient = new QueryClient();
 
-//base URL for the API client
-setBaseUrl('http://localhost:8080');
-
 function Router() {
   return (
     <Layout>
