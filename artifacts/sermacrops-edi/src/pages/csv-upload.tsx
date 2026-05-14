@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 type ResultView = "json" | "edi";
+type PostAcceptDoc = "855" | "810";
 
 interface InventoryComparison {
   productId: string;
@@ -24,6 +25,49 @@ interface InventoryComparison {
   canFulfill: boolean;
 }
 
+function CodeBlock({ children }: { children: string }) {
+  return (
+    <pre className="bg-secondary/40 border border-border rounded-md p-4 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-words leading-relaxed max-h-[400px] overflow-y-auto">
+      {children}
+    </pre>
+  );
+}
+
+function ViewToggle({
+  value,
+  onChange,
+}: {
+  value: ResultView;
+  onChange: (v: ResultView) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1 bg-secondary rounded-lg p-1">
+      <button
+        onClick={() => onChange("json")}
+        className={[
+          "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+          value === "json"
+            ? "bg-card text-foreground shadow-sm"
+            : "text-muted-foreground hover:text-foreground",
+        ].join(" ")}
+      >
+        <Braces className="h-3.5 w-3.5" /> JSON
+      </button>
+      <button
+        onClick={() => onChange("edi")}
+        className={[
+          "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+          value === "edi"
+            ? "bg-card text-foreground shadow-sm"
+            : "text-muted-foreground hover:text-foreground",
+        ].join(" ")}
+      >
+        <FileCode2 className="h-3.5 w-3.5" /> Raw EDI
+      </button>
+    </div>
+  );
+}
+
 export default function CsvUploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -31,8 +75,11 @@ export default function CsvUploadPage() {
   const [isAccepting, setIsAccepting] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [resultView, setResultView] = useState<ResultView>("json");
+  const [pendingView, setPendingView] = useState<ResultView>("json");
   const [accepted, setAccepted] = useState(false);
   const [acceptDetails, setAcceptDetails] = useState<any>(null);
+  const [postAcceptDoc, setPostAcceptDoc] = useState<PostAcceptDoc>("855");
+  const [postAcceptView, setPostAcceptView] = useState<ResultView>("edi");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -61,6 +108,7 @@ export default function CsvUploadPage() {
     setResult(null);
     setAccepted(false);
     setAcceptDetails(null);
+    setPendingView("json");
 
     try {
       const formData = new FormData();
@@ -108,6 +156,8 @@ export default function CsvUploadPage() {
       if (res.ok && data.success) {
         setAccepted(true);
         setAcceptDetails(data);
+        setPostAcceptDoc("855");
+        setPostAcceptView("edi");
         toast({ title: "PO Accepted", description: data.message });
         queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
         queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
@@ -126,6 +176,11 @@ export default function CsvUploadPage() {
   const isPending850 = result?.success && result?.pending && result?.detectedDocType === "850";
   const comparison: InventoryComparison[] = result?.inventoryComparison || [];
   const canFullyFulfill = comparison.length > 0 && comparison.every((c) => c.canFulfill);
+
+  const activePostAcceptEdi = postAcceptDoc === "855" ? acceptDetails?.edi855 : acceptDetails?.edi810;
+  const activePostAcceptJson = postAcceptDoc === "855"
+    ? { type: "855", purchaseOrderNumber: result?.parsedEdiJson?.summary?.purchaseOrderNumber, acknowledgeCode: "AC", action: "po_acknowledged" }
+    : { type: "810", invoiceNumber: acceptDetails?.invoiceNumber, purchaseOrderNumber: result?.parsedEdiJson?.summary?.purchaseOrderNumber, totalAmount: acceptDetails?.totalAmount, currency: "USD", action: "invoice_sent_to_client" };
 
   return (
     <div className="space-y-6">
@@ -245,30 +300,7 @@ export default function CsvUploadPage() {
                 </CardDescription>
               </div>
               {result?.success && !isPending850 && (
-                <div className="flex items-center gap-1 bg-secondary rounded-lg p-1">
-                  <button
-                    onClick={() => setResultView("json")}
-                    className={[
-                      "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
-                      resultView === "json"
-                        ? "bg-card text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground",
-                    ].join(" ")}
-                  >
-                    <Braces className="h-3.5 w-3.5" /> JSON
-                  </button>
-                  <button
-                    onClick={() => setResultView("edi")}
-                    className={[
-                      "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
-                      resultView === "edi"
-                        ? "bg-card text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground",
-                    ].join(" ")}
-                  >
-                    <FileCode2 className="h-3.5 w-3.5" /> Raw EDI
-                  </button>
-                </div>
+                <ViewToggle value={resultView} onChange={setResultView} />
               )}
             </div>
           </CardHeader>
@@ -281,7 +313,7 @@ export default function CsvUploadPage() {
 
             ) : isPending850 ? (
               /* ── 850 Pending Acceptance View ── */
-              <div className="space-y-4">
+              <div className="space-y-5">
                 {/* Partner + PO info */}
                 <div className="flex items-center gap-2 flex-wrap">
                   <Badge variant="outline" className="font-mono font-semibold">850</Badge>
@@ -291,24 +323,6 @@ export default function CsvUploadPage() {
                     {result.csvRowsProcessed} line{result.csvRowsProcessed !== 1 ? "s" : ""}
                   </Badge>
                 </div>
-
-                {/* Acceptance outcome (after accept) */}
-                {accepted && acceptDetails && (
-                  <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 space-y-2">
-                    <p className="font-semibold text-emerald-800 flex items-center gap-2">
-                      <PackageCheck className="h-5 w-5" /> Purchase Order Accepted
-                    </p>
-                    <p className="text-sm text-emerald-700">{acceptDetails.message}</p>
-                    <div className="flex gap-3 text-xs font-mono text-emerald-700 flex-wrap">
-                      <span>Invoice: {acceptDetails.invoiceNumber}</span>
-                      <span>Total: ${Number(acceptDetails.totalAmount || 0).toFixed(2)}</span>
-                    </div>
-                    <p className="text-xs text-emerald-600 mt-1">
-                      EDI 855 (Acknowledgment) + EDI 810 (Invoice) sent to {acceptDetails.partnerName}.
-                      Inventory updated.
-                    </p>
-                  </div>
-                )}
 
                 {/* Inventory comparison table */}
                 {comparison.length > 0 && (
@@ -380,6 +394,36 @@ export default function CsvUploadPage() {
                   </div>
                 )}
 
+                {/* ── Inbound EDI preview (before accept) ── */}
+                {!accepted && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
+                        <FileCode2 className="h-3.5 w-3.5" />
+                        Inbound EDI 850 Document
+                      </p>
+                      <ViewToggle value={pendingView} onChange={setPendingView} />
+                    </div>
+
+                    {pendingView === "json" && result.parsedEdiJson && (
+                      <CodeBlock>
+                        {JSON.stringify(result.parsedEdiJson, null, 2)}
+                      </CodeBlock>
+                    )}
+
+                    {pendingView === "edi" && result.generatedEdi && (
+                      <div className="space-y-1">
+                        <div className="flex justify-end">
+                          <Badge variant="outline" className="text-emerald-700 border-emerald-400/60 bg-emerald-50 text-xs">
+                            X12 005010 ✓
+                          </Badge>
+                        </div>
+                        <CodeBlock>{result.generatedEdi}</CodeBlock>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Accept button */}
                 {!accepted && (
                   <Button
@@ -393,6 +437,76 @@ export default function CsvUploadPage() {
                       <><ClipboardCheck className="h-4 w-4" /> Accept Purchase Order</>
                     )}
                   </Button>
+                )}
+
+                {/* ── Post-acceptance view ── */}
+                {accepted && acceptDetails && (
+                  <div className="space-y-4">
+                    {/* Success banner */}
+                    <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 space-y-2">
+                      <p className="font-semibold text-emerald-800 flex items-center gap-2">
+                        <PackageCheck className="h-5 w-5" /> Purchase Order Accepted
+                      </p>
+                      <p className="text-sm text-emerald-700">{acceptDetails.message}</p>
+                      <div className="flex gap-3 text-xs font-mono text-emerald-700 flex-wrap">
+                        <span>Invoice: {acceptDetails.invoiceNumber}</span>
+                        <span>Total: ${Number(acceptDetails.totalAmount || 0).toFixed(2)}</span>
+                      </div>
+                      <p className="text-xs text-emerald-600 mt-1">
+                        EDI 855 (Acknowledgment) + EDI 810 (Invoice) sent to {acceptDetails.partnerName}.
+                        Inventory updated.
+                      </p>
+                    </div>
+
+                    {/* Generated EDI preview (855 / 810) */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
+                          <FileCode2 className="h-3.5 w-3.5" />
+                          Generated EDI Response
+                        </p>
+                        <ViewToggle value={postAcceptView} onChange={setPostAcceptView} />
+                      </div>
+
+                      {/* Doc selector tabs */}
+                      <div className="flex items-center gap-2">
+                        {(["855", "810"] as PostAcceptDoc[]).map((doc) => (
+                          <button
+                            key={doc}
+                            onClick={() => setPostAcceptDoc(doc)}
+                            className={[
+                              "flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono font-semibold border transition-colors",
+                              postAcceptDoc === doc
+                                ? "bg-primary text-primary-foreground border-primary"
+                                : "bg-card text-muted-foreground border-border hover:text-foreground hover:border-primary/50",
+                            ].join(" ")}
+                          >
+                            {doc}
+                            <span className="font-sans font-normal opacity-70">
+                              {doc === "855" ? "ACK" : "Invoice"}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+
+                      {postAcceptView === "json" && (
+                        <CodeBlock>
+                          {JSON.stringify(activePostAcceptJson, null, 2)}
+                        </CodeBlock>
+                      )}
+
+                      {postAcceptView === "edi" && activePostAcceptEdi && (
+                        <div className="space-y-1">
+                          <div className="flex justify-end">
+                            <Badge variant="outline" className="text-emerald-700 border-emerald-400/60 bg-emerald-50 text-xs">
+                              X12 005010 ✓
+                            </Badge>
+                          </div>
+                          <CodeBlock>{activePostAcceptEdi}</CodeBlock>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
 
@@ -450,9 +564,9 @@ export default function CsvUploadPage() {
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       EDI Content — JSON
                     </p>
-                    <pre className="bg-secondary/40 border border-border rounded-md p-4 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-words leading-relaxed max-h-[480px] overflow-y-auto">
+                    <CodeBlock>
                       {JSON.stringify(result.parsedEdiJson, null, 2)}
-                    </pre>
+                    </CodeBlock>
                   </div>
                 )}
 
@@ -466,9 +580,7 @@ export default function CsvUploadPage() {
                         X12 005010 ✓
                       </Badge>
                     </div>
-                    <pre className="bg-secondary/40 border border-border rounded-md p-4 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed max-h-[480px] overflow-y-auto">
-                      {result.generatedEdi}
-                    </pre>
+                    <CodeBlock>{result.generatedEdi}</CodeBlock>
                   </div>
                 )}
               </div>
