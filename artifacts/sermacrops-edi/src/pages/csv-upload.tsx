@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 
 type ResultView = "json" | "edi";
-type PostAcceptDoc = "855" | "810";
+type PostAcceptDoc = "855" | "810" | "204";
 
 interface InventoryComparison {
   productId: string;
@@ -177,10 +177,16 @@ export default function CsvUploadPage() {
   const comparison: InventoryComparison[] = result?.inventoryComparison || [];
   const canFullyFulfill = comparison.length > 0 && comparison.every((c) => c.canFulfill);
 
-  const activePostAcceptEdi = postAcceptDoc === "855" ? acceptDetails?.edi855 : acceptDetails?.edi810;
-  const activePostAcceptJson = postAcceptDoc === "855"
-    ? { type: "855", purchaseOrderNumber: result?.parsedEdiJson?.summary?.purchaseOrderNumber, acknowledgeCode: "AC", action: "po_acknowledged" }
-    : { type: "810", invoiceNumber: acceptDetails?.invoiceNumber, purchaseOrderNumber: result?.parsedEdiJson?.summary?.purchaseOrderNumber, totalAmount: acceptDetails?.totalAmount, currency: "USD", action: "invoice_sent_to_client" };
+  const activePostAcceptEdi =
+    postAcceptDoc === "855" ? acceptDetails?.edi855 :
+    postAcceptDoc === "810" ? acceptDetails?.edi810 :
+    acceptDetails?.edi204;
+  const activePostAcceptJson =
+    postAcceptDoc === "855"
+      ? { type: "855", purchaseOrderNumber: result?.parsedEdiJson?.summary?.purchaseOrderNumber, acknowledgeCode: "AC", action: "po_acknowledged" }
+    : postAcceptDoc === "810"
+      ? { type: "810", invoiceNumber: acceptDetails?.invoiceNumber, purchaseOrderNumber: result?.parsedEdiJson?.summary?.purchaseOrderNumber, totalAmount: acceptDetails?.totalAmount, currency: "USD", action: "invoice_sent_to_client" }
+    : { type: "204", shipmentId: acceptDetails?.shipmentId, poNumber: acceptDetails?.poNumber, logisticsPartner: acceptDetails?.logisticsPartnerName, action: "load_tender_sent" };
 
   return (
     <div className="space-y-6">
@@ -454,6 +460,7 @@ export default function CsvUploadPage() {
                       </div>
                       <p className="text-xs text-emerald-600 mt-1">
                         EDI 855 (Acknowledgment) + EDI 810 (Invoice) sent to {acceptDetails.partnerName}.
+                        EDI 204 (Load Tender) dispatched to {acceptDetails.logisticsPartnerName}.
                         Inventory updated.
                       </p>
                     </div>
@@ -469,22 +476,29 @@ export default function CsvUploadPage() {
                       </div>
 
                       {/* Doc selector tabs */}
-                      <div className="flex items-center gap-2">
-                        {(["855", "810"] as PostAcceptDoc[]).map((doc) => (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {(
+                          [
+                            { code: "855", label: "ACK", to: acceptDetails.partnerName },
+                            { code: "810", label: "Invoice", to: acceptDetails.partnerName },
+                            { code: "204", label: "Load Tender", to: acceptDetails.logisticsPartnerName },
+                          ] as { code: PostAcceptDoc; label: string; to: string }[]
+                        ).map(({ code, label, to }) => (
                           <button
-                            key={doc}
-                            onClick={() => setPostAcceptDoc(doc)}
+                            key={code}
+                            onClick={() => setPostAcceptDoc(code)}
                             className={[
                               "flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-mono font-semibold border transition-colors",
-                              postAcceptDoc === doc
+                              postAcceptDoc === code
                                 ? "bg-primary text-primary-foreground border-primary"
                                 : "bg-card text-muted-foreground border-border hover:text-foreground hover:border-primary/50",
                             ].join(" ")}
                           >
-                            {doc}
-                            <span className="font-sans font-normal opacity-70">
-                              {doc === "855" ? "ACK" : "Invoice"}
-                            </span>
+                            {code}
+                            <span className="font-sans font-normal opacity-70">{label}</span>
+                            {to && (
+                              <span className="font-sans font-normal opacity-50 hidden sm:inline">→ {to}</span>
+                            )}
                           </button>
                         ))}
                       </div>

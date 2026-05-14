@@ -254,6 +254,8 @@ router.post("/edi/accept-850/:txId", async (req, res) => {
 
   const cn855 = String(Date.now()).slice(-9);
   const cn810 = String(Number(cn855) + 1).toString().slice(-9);
+  const cn204 = String(Number(cn855) + 2).toString().slice(-9);
+  const shipmentId = `SHP${cn855}`;
 
   // 3. Generate EDI 855 Acknowledgment → send to client
   const edi855 = generateEdi("855", SERMACROPS_ID, partnerId, cn855, {
@@ -318,32 +320,80 @@ router.post("/edi/accept-850/:txId", async (req, res) => {
     }
   );
 
+  // 5b. Generate EDI 204 Load Tender → send to logistics partner
+  const logisticsPartner = Object.values(PARTNERS).find((p) => p.type === "logistics");
+  let edi204: string | null = null;
+  let logisticsPartnerId: string | null = null;
+  let logisticsPartnerName: string | null = null;
+
+  if (logisticsPartner) {
+    logisticsPartnerId = logisticsPartner.id;
+    logisticsPartnerName = logisticsPartner.name;
+    edi204 = generateEdi("204", SERMACROPS_ID, logisticsPartner.ediId, cn204, {
+      shipmentId,
+      poNumber,
+    });
+
+    await txCol.insertOne({
+      transactionType: "204",
+      direction: "outbound",
+      partnerId: logisticsPartner.id,
+      partnerName: logisticsPartner.name,
+      controlNumber: cn204,
+      status: "processed",
+      integrityStatus: "valid",
+      rawEdi: edi204,
+      parsedJson: {
+        shipmentId,
+        poNumber,
+        relatedClientPo: poNumber,
+        invoiceNumber,
+        action: "load_tender_sent",
+      },
+      errorMessage: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
   // 6. Send via AS2 (non-fatal)
   if (partner) {
     try {
       const as2_855 = createAs2Message(SERMACROPS_ID, partner.as2Id, edi855, "855");
       const as2_810 = createAs2Message(SERMACROPS_ID, partner.as2Id, edi810, "810");
-      await Promise.allSettled([
+      const sends: Promise<unknown>[] = [
         sendAs2Message(partner.endpointUrl, as2_855),
         sendAs2Message(partner.endpointUrl, as2_810),
-      ]);
+      ];
+      if (logisticsPartner && edi204) {
+        const as2_204 = createAs2Message(SERMACROPS_ID, logisticsPartner.as2Id, edi204, "204");
+        sends.push(sendAs2Message(logisticsPartner.endpointUrl, as2_204));
+      }
+      await Promise.allSettled(sends);
     } catch (err) {
       logger.warn({ err, partnerId }, "AS2 send error on accept-850 (non-fatal)");
     }
   }
 
-  logger.info({ txId: req.params.txId, poNumber, partnerId, invoiceNumber }, "850 accepted — inventory updated, 855 + 810 sent to client");
+  logger.info(
+    { txId: req.params.txId, poNumber, partnerId, invoiceNumber, shipmentId, logisticsPartnerId },
+    "850 accepted — inventory updated, 855 + 810 sent to client, 204 sent to logistics"
+  );
 
   return res.json({
     success: true,
     poNumber,
     invoiceNumber,
+    shipmentId,
     partnerId,
     partnerName,
+    logisticsPartnerId,
+    logisticsPartnerName,
     totalAmount,
-    message: `PO ${poNumber} accepted. EDI 855 (ACK) and EDI 810 (Invoice) sent to ${partnerName}.`,
+    message: `PO ${poNumber} accepted. EDI 855 (ACK) and EDI 810 (Invoice) sent to ${partnerName}. EDI 204 (Load Tender) dispatched to ${logisticsPartnerName}.`,
     edi855,
     edi810,
+    edi204,
   });
 });
 
