@@ -119,7 +119,7 @@ export default function TransactionsPage() {
                   <TableCell className="text-right"><Skeleton className="h-8 w-24 ml-auto" /></TableCell>
                 </TableRow>
               ))
-            ) : data?.transactions.length === 0 ? (
+            ) : data?.transactions?.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
                   No transactions found.

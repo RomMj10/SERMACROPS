@@ -124,7 +124,7 @@ export default function PurchaseOrdersPage() {
                   <TableCell className="text-right"><Skeleton className="h-8 w-28 ml-auto rounded-md" /></TableCell>
                 </TableRow>
               ))
-            ) : data?.purchaseOrders.length === 0 ? (
+            ) : data?.purchaseOrders?.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
                   No purchase orders found.
