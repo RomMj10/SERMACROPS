@@ -1,5 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
+import { ObjectId } from "mongodb";
+import { getDb } from "@workspace/db";
 import { routeEdiDocument } from "../edi/router";
 import { generateEdi, parseEdi } from "../edi/parser";
 import {
@@ -13,19 +15,21 @@ import {
 } from "../edi/csvConverter";
 import { PARTNERS } from "../edi/config";
 import { logger } from "../lib/logger";
+import { createAs2Message, sendAs2Message } from "../edi/as2Client";
 import {
   SimulateEdiTransactionParams,
   SimulateEdiTransactionBody,
 } from "@workspace/api-zod";
 
 const router = Router();
+const SERMACROPS_ID = "SERMACROPS";
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
-const KNOWN_DOC_TYPES: EdiDocType[] = ["850", "855", "856", "810", "204", "990"];
+const KNOWN_DOC_TYPES: EdiDocType[] = ["850", "855", "856", "810", "204", "990", "861"];
 
 // ─── CSV upload (main inbound endpoint) ──────────────────────────────────────
 
@@ -106,7 +110,74 @@ router.post("/edi/upload", upload.single("file"), async (req, res) => {
     `CSV uploaded and converted to ANSI X12 EDI ${docType}`
   );
 
-  // 7. Route / process the EDI document
+  // ── Special case: 850 from a CLIENT partner → hold for manual acceptance ──
+  if (docType === "850" && partner.type === "client") {
+    const db = await getDb();
+    const now = new Date();
+
+    // Store as pending_acceptance transaction
+    const ins = await db.collection("transactions").insertOne({
+      transactionType: "850",
+      direction: "inbound",
+      partnerId,
+      partnerName: partner.name,
+      controlNumber: cn,
+      status: "pending_acceptance",
+      integrityStatus: "valid",
+      rawEdi,
+      parsedJson: {
+        ...parsedEdiJson.summary,
+        envelope: { senderId: partnerId, receiverId: SERMACROPS_ID },
+      },
+      errorMessage: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const transactionId = ins.insertedId.toHexString();
+
+    // Build inventory comparison snapshot
+    const lineItems = (parsedEdiJson.summary.lineItems as any[]) || [];
+    const invCol = db.collection("inventory");
+    const inventoryComparison = await Promise.all(
+      lineItems.map(async (item: any) => {
+        const inv = await invCol.findOne({ productId: item.productId });
+        const currentAvailable = inv
+          ? Math.max(0, Number(inv.quantityOnHand) - Number(inv.quantityReserved))
+          : 0;
+        const afterAvailable = currentAvailable - item.quantity;
+        return {
+          productId: item.productId,
+          description: item.description || item.productId,
+          orderedQty: item.quantity,
+          uom: item.uom || "EA",
+          unitPrice: item.unitPrice || 0,
+          beforeAvailable: currentAvailable,
+          afterAvailable,
+          reorderPoint: inv ? Number(inv.reorderPoint) : 0,
+          canFulfill: afterAvailable >= 0,
+        };
+      })
+    );
+
+    return res.json({
+      success: true,
+      pending: true,
+      transactionId,
+      transactionType: "850",
+      partnerId,
+      partnerName: partner.name,
+      detectedDocType: "850",
+      detectedDocLabel: DOC_TYPE_SPECS["850"].label,
+      csvRowsProcessed: rows.length,
+      generatedEdi: rawEdi,
+      parsedEdiJson,
+      inventoryComparison,
+      message: "EDI 850 parsed and ready for manual acceptance.",
+    });
+  }
+
+  // 7. Route / process the EDI document (all non-850-client types)
   const result = await routeEdiDocument(rawEdi);
 
   return res.json({
@@ -116,6 +187,163 @@ router.post("/edi/upload", upload.single("file"), async (req, res) => {
     csvRowsProcessed: rows.length,
     generatedEdi: rawEdi,
     parsedEdiJson,
+  });
+});
+
+// ─── Accept a pending 850 from a client ──────────────────────────────────────
+
+router.post("/edi/accept-850/:txId", async (req, res) => {
+  if (!ObjectId.isValid(req.params.txId)) {
+    return res.status(400).json({ error: "bad_request", message: "Invalid transaction ID" });
+  }
+
+  const db = await getDb();
+  const txCol  = db.collection("transactions");
+  const poCol  = db.collection("purchase_orders");
+  const invCol = db.collection("inventory");
+  const now = new Date();
+
+  const tx = await txCol.findOne({ _id: new ObjectId(req.params.txId) });
+  if (!tx) return res.status(404).json({ error: "not_found", message: "Transaction not found" });
+  if (tx.transactionType !== "850") {
+    return res.status(400).json({ error: "bad_request", message: "Only 850 transactions can be accepted here" });
+  }
+  if (tx.status !== "pending_acceptance") {
+    return res.status(400).json({ error: "bad_request", message: `Transaction status is already: ${tx.status}` });
+  }
+
+  const partnerId  = tx.partnerId as string;
+  const partner    = PARTNERS[partnerId];
+  const partnerName = partner?.name || partnerId;
+  const parsedJson = tx.parsedJson as any;
+  const poNumber   = parsedJson?.purchaseOrderNumber || `PO${req.params.txId.slice(-6)}`;
+  const lineItems: any[] = parsedJson?.lineItems || [];
+  const totalAmount = lineItems.reduce((s: number, i: any) => s + (i.quantity || 0) * (i.unitPrice || 0), 0);
+
+  // 1. Deduct inventory for each ordered item
+  for (const item of lineItems) {
+    const inv = await invCol.findOne({ productId: item.productId });
+    if (inv) {
+      const newOnHand = Math.max(0, Number(inv.quantityOnHand) - Number(item.quantity));
+      await invCol.updateOne(
+        { productId: item.productId },
+        { $set: { quantityOnHand: String(newOnHand), updatedAt: now } }
+      );
+    }
+  }
+
+  // 2. Create inbound PO record
+  const existing = await poCol.findOne({ poNumber });
+  if (!existing) {
+    await poCol.insertOne({
+      poNumber,
+      direction: "inbound",
+      partnerId,
+      partnerName,
+      status: "acknowledged",
+      totalAmount,
+      currency: "USD",
+      items: lineItems,
+      purchaseOrderDate: parsedJson?.purchaseOrderDate,
+      createdAt: now,
+      updatedAt: now,
+    });
+  } else {
+    await poCol.updateOne({ poNumber }, { $set: { status: "acknowledged", updatedAt: now } });
+  }
+
+  const cn855 = String(Date.now()).slice(-9);
+  const cn810 = String(Number(cn855) + 1).toString().slice(-9);
+
+  // 3. Generate EDI 855 Acknowledgment → send to client
+  const edi855 = generateEdi("855", SERMACROPS_ID, partnerId, cn855, {
+    purchaseOrderNumber: poNumber,
+    acknowledgeCode: "AC",
+  });
+
+  await txCol.insertOne({
+    transactionType: "855",
+    direction: "outbound",
+    partnerId,
+    partnerName,
+    controlNumber: cn855,
+    status: "processed",
+    integrityStatus: "valid",
+    rawEdi: edi855,
+    parsedJson: { purchaseOrderNumber: poNumber, acknowledgeCode: "AC", action: "po_acknowledged" },
+    errorMessage: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  // 4. Generate EDI 810 Invoice → send to client
+  const invoiceNumber = `INV${cn855}`;
+  const edi810 = generateEdi("810", SERMACROPS_ID, partnerId, cn810, {
+    poNumber,
+    invoiceNumber,
+    totalAmount,
+    items: lineItems.map((i: any) => ({
+      productId: i.productId,
+      quantity: i.quantity,
+      unitPrice: i.unitPrice || 0,
+    })),
+  });
+
+  await txCol.insertOne({
+    transactionType: "810",
+    direction: "outbound",
+    partnerId,
+    partnerName,
+    controlNumber: cn810,
+    status: "processed",
+    integrityStatus: "valid",
+    rawEdi: edi810,
+    parsedJson: { invoiceNumber, purchaseOrderNumber: poNumber, totalAmount, currency: "USD", action: "invoice_sent_to_client" },
+    errorMessage: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  // 5. Update original 850 transaction → processed
+  await txCol.updateOne(
+    { _id: new ObjectId(req.params.txId) },
+    {
+      $set: {
+        status: "processed",
+        updatedAt: now,
+        "parsedJson.action": "inbound_po_accepted",
+        "parsedJson.invoiceNumber": invoiceNumber,
+        "parsedJson.poId": poNumber,
+      },
+    }
+  );
+
+  // 6. Send via AS2 (non-fatal)
+  if (partner) {
+    try {
+      const as2_855 = createAs2Message(SERMACROPS_ID, partner.as2Id, edi855, "855");
+      const as2_810 = createAs2Message(SERMACROPS_ID, partner.as2Id, edi810, "810");
+      await Promise.allSettled([
+        sendAs2Message(partner.endpointUrl, as2_855),
+        sendAs2Message(partner.endpointUrl, as2_810),
+      ]);
+    } catch (err) {
+      logger.warn({ err, partnerId }, "AS2 send error on accept-850 (non-fatal)");
+    }
+  }
+
+  logger.info({ txId: req.params.txId, poNumber, partnerId, invoiceNumber }, "850 accepted — inventory updated, 855 + 810 sent to client");
+
+  return res.json({
+    success: true,
+    poNumber,
+    invoiceNumber,
+    partnerId,
+    partnerName,
+    totalAmount,
+    message: `PO ${poNumber} accepted. EDI 855 (ACK) and EDI 810 (Invoice) sent to ${partnerName}.`,
+    edi855,
+    edi810,
   });
 });
 

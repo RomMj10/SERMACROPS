@@ -339,6 +339,64 @@ export async function handle204(parsed: ParsedEdiDocument, transactionId: string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 861 – Receiving Advice
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function handle861(parsed: ParsedEdiDocument, transactionId: string): Promise<void> {
+  const log = logger.child({ handler: "861", transactionId });
+  const summary = parsed.summary as {
+    receiptNumber?: string;
+    receiptDate?: string;
+    purchaseOrderNumber?: string;
+    lineItems?: Array<{ lineNumber?: number; productId: string; quantity: number; uom: string }>;
+    lineCount?: number;
+  };
+
+  const db  = await getDb();
+  const now = new Date();
+  const invCol = db.collection("inventory");
+
+  // Update inventory: add received quantities back to stock (goods arrived from supplier)
+  if (summary.lineItems?.length) {
+    for (const item of summary.lineItems) {
+      const result = await invCol.findOneAndUpdate(
+        { productId: item.productId },
+        {
+          $inc: { quantityOnHand: item.quantity, quantityReserved: -item.quantity },
+          $set: { updatedAt: now },
+        },
+        { returnDocument: "after" }
+      );
+      if (result) {
+        log.info({ productId: item.productId, qtyReceived: item.quantity }, "Inventory updated from 861");
+      } else {
+        log.warn({ productId: item.productId }, "Product not found in inventory — skipping");
+      }
+    }
+  }
+
+  // Mark related PO as completed if found
+  if (summary.purchaseOrderNumber) {
+    await db.collection("purchase_orders").updateOne(
+      { poNumber: summary.purchaseOrderNumber },
+      { $set: { status: "completed", receivedDate: now, updatedAt: now } }
+    );
+  }
+
+  await enrichTransaction(transactionId, "processed", {
+    receiptNumber: summary.receiptNumber,
+    receiptDate: summary.receiptDate,
+    purchaseOrderNumber: summary.purchaseOrderNumber,
+    lineItems: summary.lineItems || [],
+    lineCount: summary.lineCount || 0,
+    senderId: parsed.senderId,
+    action: "goods_received",
+  });
+
+  log.info({ receiptNumber: summary.receiptNumber, poNumber: summary.purchaseOrderNumber }, "EDI 861 processed — goods received, inventory updated");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 990 – Response to Load Tender
 // ─────────────────────────────────────────────────────────────────────────────
 

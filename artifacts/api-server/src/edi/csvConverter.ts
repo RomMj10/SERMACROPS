@@ -17,7 +17,7 @@ const SEGMENT_SEP = "~";
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type EdiDocType = "850" | "855" | "856" | "810" | "204" | "990";
+export type EdiDocType = "850" | "855" | "856" | "810" | "204" | "990" | "861";
 
 export interface CsvRow {
   [key: string]: string;
@@ -96,6 +96,17 @@ export const DOC_TYPE_SPECS: Record<EdiDocType, DocTypeSpec> = {
       ["SHP001", "FASTLOGISTICS", "A", "2026-07-03"],
     ],
   },
+  "861": {
+    code: "861",
+    label: "Receiving Advice",
+    description: "Confirm receipt of goods from a supplier",
+    requiredHeaders: ["receipt_number", "po_number", "quantity_received"],
+    allHeaders: ["receipt_number", "partner_id", "po_number", "receipt_date", "product_id", "description", "quantity_received", "uom"],
+    sampleRows: [
+      ["RCV001", "PHILHARVEST", "PO12345", "2026-07-10", "COFFEE001", "Arabica Coffee Beans", "500", "LB"],
+      ["RCV001", "PHILHARVEST", "PO12345", "2026-07-10", "COFFEE002", "Robusta Coffee Beans", "300", "LB"],
+    ],
+  },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,7 +122,7 @@ export function inferDocTypeFromCsv(rows: CsvRow[]): EdiDocType {
   if (rows.length === 0) throw new Error("CSV has no data rows.");
   const headers = new Set(Object.keys(rows[0]));
 
-  const ordered: EdiDocType[] = ["810", "856", "990", "204", "855", "850"];
+  const ordered: EdiDocType[] = ["810", "861", "856", "990", "204", "855", "850"];
   for (const code of ordered) {
     const required = DOC_TYPE_SPECS[code].requiredHeaders;
     if (required.every((h) => headers.has(h))) return code;
@@ -250,7 +261,7 @@ export function validateAnsiX12(rawEdi: string): X12ValidationResult {
     }
   }
 
-  const knownTypes = ["850", "855", "856", "810", "204", "990", "997", "824", "214"];
+  const knownTypes = ["850", "855", "856", "810", "204", "990", "861", "997", "824", "214"];
   if (st.elements[0] && !knownTypes.includes(st.elements[0])) {
     errors.push(`Unknown ANSI X12 transaction set identifier "${st.elements[0]}".`);
   }
@@ -281,7 +292,7 @@ function buildEnvelope(
 
   const functionalCodes: Record<string, string> = {
     "850": "PO", "855": "PR", "856": "SH",
-    "810": "IN", "204": "SM", "990": "GF",
+    "810": "IN", "204": "SM", "990": "GF", "861": "RC",
   };
   const fc = functionalCodes[transactionType] || "XX";
 
@@ -325,6 +336,7 @@ export function csvToEdi(
     case "810": return buildEdi810(rows, senderId, receiverId, controlNumber);
     case "204": return buildEdi204(rows, senderId, receiverId, controlNumber);
     case "990": return buildEdi990(rows, senderId, receiverId, controlNumber);
+    case "861": return buildEdi861(rows, senderId, receiverId, controlNumber);
   }
 }
 
@@ -473,6 +485,31 @@ function buildEdi990(rows: CsvRow[], senderId: string, receiverId: string, cn: s
   ];
 
   return buildEnvelope("990", senderId, receiverId, cn, body);
+}
+
+// 861 – Receiving Advice
+function buildEdi861(rows: CsvRow[], senderId: string, receiverId: string, cn: string): string {
+  const first       = rows[0];
+  const rcvNumber   = first.receipt_number || `RCV${cn}`;
+  const poNumber    = first.po_number      || "PO001";
+  const dateStr     = toDateStr(first.receipt_date);
+
+  const lineSegments = rows.map((row, i) => {
+    const pid = row.product_id        || `ITEM${i + 1}`;
+    const qty = parseFloat(row.quantity_received || "0") || 0;
+    const uom = (row.uom || "EA").toUpperCase();
+    const desc = row.description      || pid;
+    return `PO1*${i + 1}*${qty}*${uom}*0*PE*VP*${pid}*PI*${desc}`;
+  });
+
+  const body = [
+    `BRA*${rcvNumber}*0002*${dateStr}*00`,
+    `PRF*${poNumber}`,
+    ...lineSegments,
+    `CTT*${rows.length}`,
+  ];
+
+  return buildEnvelope("861", senderId, receiverId, cn, body);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

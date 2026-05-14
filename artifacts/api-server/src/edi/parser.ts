@@ -112,8 +112,31 @@ function buildSummary(type: string, segments: EdiSegment[]): Record<string, unkn
     case "810": return build810Summary(segments);
     case "204": return build204Summary(segments);
     case "990": return build990Summary(segments);
+    case "861": return build861Summary(segments);
     default: return { type, rawSegmentCount: segments.length };
   }
+}
+
+function build861Summary(segments: EdiSegment[]): Record<string, unknown> {
+  const bra = segments.find((s) => s.id === "BRA");
+  const prf = segments.find((s) => s.id === "PRF");
+  const po1Segments = segments.filter((s) => s.id === "PO1");
+
+  const lineItems = po1Segments.map((seg, i) => ({
+    lineNumber: i + 1,
+    quantity: parseFloat(seg.elements[1] || "0"),
+    uom: seg.elements[2] || "EA",
+    productId: seg.elements[6] || "",
+    description: seg.elements[8] || seg.elements[6] || "",
+  }));
+
+  return {
+    receiptNumber: bra?.elements[0] || "",
+    receiptDate: bra?.elements[2] || "",
+    purchaseOrderNumber: prf?.elements[0] || "",
+    lineItems,
+    lineCount: lineItems.length,
+  };
 }
 
 function build850Summary(segments: EdiSegment[]): Record<string, unknown> {
@@ -287,6 +310,21 @@ export function generateEdi(
       segmentCount += 2;
       break;
     }
+    case "861": {
+      const body = payload as { receiptNumber?: string; poNumber?: string; items?: Array<{ productId: string; description?: string; quantity: number; uom?: string }> };
+      const items = body.items || [];
+      const lineSegments = items.map((item, i) =>
+        `PO1*${i + 1}*${item.quantity}*${item.uom || "EA"}*0*PE*VP*${item.productId}*PI*${item.description || item.productId}`
+      );
+      bodySegments = [
+        `BRA*${body.receiptNumber || `RCV${cn}`}*0002*${dateStr}*00`,
+        `PRF*${body.poNumber || "PO001"}`,
+        ...lineSegments,
+        `CTT*${items.length}`,
+      ].join(SEGMENT_SEPARATOR + "\n");
+      segmentCount += 3 + items.length;
+      break;
+    }
     default:
       bodySegments = `NTE**Unknown transaction type ${transactionType}`;
       segmentCount++;
@@ -307,6 +345,7 @@ function getFunctionalCode(transactionType: string): string {
     "810": "IN",
     "204": "SM",
     "990": "GF",
+    "861": "RC",
   };
   return codes[transactionType] || "XX";
 }

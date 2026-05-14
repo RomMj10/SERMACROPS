@@ -1,7 +1,7 @@
 import { getDb } from "@workspace/db";
 import { parseEdi } from "./parser";
 import { PARTNERS } from "./config";
-import { handle850, handle855, handle856, handle810, handle204, handle990 } from "./transactionHandlers";
+import { handle850, handle855, handle856, handle810, handle204, handle990, handle861 } from "./transactionHandlers";
 import { logger } from "../lib/logger";
 
 export interface EdiRouterResult {
@@ -58,6 +58,7 @@ export async function routeEdiDocument(rawEdi: string): Promise<EdiRouterResult>
       case "810": await handle810(parsed, transactionId); break;
       case "204": await handle204(parsed, transactionId); break;
       case "990": await handle990(parsed, transactionId); break;
+      case "861": await handle861(parsed, transactionId); break;
       default: {
         logger.warn({ transactionType: parsed.transactionType }, "Unknown transaction type");
         await col.updateOne(

@@ -7,16 +7,32 @@ import { useToast } from "@/hooks/use-toast";
 import {
   Upload, FileText, Download, CheckCircle2, XCircle,
   AlertTriangle, Loader2, FileUp, Braces, FileCode2,
+  ClipboardCheck, TrendingDown, PackageCheck,
 } from "lucide-react";
 
 type ResultView = "json" | "edi";
+
+interface InventoryComparison {
+  productId: string;
+  description: string;
+  orderedQty: number;
+  uom: string;
+  unitPrice: number;
+  beforeAvailable: number;
+  afterAvailable: number;
+  reorderPoint: number;
+  canFulfill: boolean;
+}
 
 export default function CsvUploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [isAccepting, setIsAccepting] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [resultView, setResultView] = useState<ResultView>("json");
+  const [accepted, setAccepted] = useState(false);
+  const [acceptDetails, setAcceptDetails] = useState<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -29,6 +45,8 @@ export default function CsvUploadPage() {
     }
     setFile(selected);
     setResult(null);
+    setAccepted(false);
+    setAcceptDetails(null);
   }
 
   function handleDrop(e: React.DragEvent) {
@@ -41,6 +59,8 @@ export default function CsvUploadPage() {
     if (!file) return;
     setIsUploading(true);
     setResult(null);
+    setAccepted(false);
+    setAcceptDetails(null);
 
     try {
       const formData = new FormData();
@@ -51,13 +71,20 @@ export default function CsvUploadPage() {
       setResult({ ...data, httpStatus: res.status });
 
       if (res.ok && data.success) {
-        toast({
-          title: "EDI Processed",
-          description: `EDI ${data.detectedDocType} (${data.detectedDocLabel}) — ${data.csvRowsProcessed} row(s) processed.`,
-        });
-        queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/dashboard/summary"] });
+        if (data.pending) {
+          toast({
+            title: "EDI 850 Parsed — Awaiting Acceptance",
+            description: `${data.csvRowsProcessed} line(s) from ${data.partnerName}. Review inventory and accept to process.`,
+          });
+        } else {
+          toast({
+            title: "EDI Processed",
+            description: `EDI ${data.detectedDocType} (${data.detectedDocLabel}) — ${data.csvRowsProcessed} row(s) processed.`,
+          });
+          queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/dashboard/summary"] });
+        }
       } else {
         toast({
           title: "Processing Failed",
@@ -72,6 +99,34 @@ export default function CsvUploadPage() {
     }
   }
 
+  async function handleAccept() {
+    if (!result?.transactionId) return;
+    setIsAccepting(true);
+    try {
+      const res = await fetch(`/api/edi/accept-850/${result.transactionId}`, { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setAccepted(true);
+        setAcceptDetails(data);
+        toast({ title: "PO Accepted", description: data.message });
+        queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/dashboard/summary"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/inventory"] });
+      } else {
+        toast({ title: "Acceptance Failed", description: data.message, variant: "destructive" });
+      }
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    } finally {
+      setIsAccepting(false);
+    }
+  }
+
+  const isPending850 = result?.success && result?.pending && result?.detectedDocType === "850";
+  const comparison: InventoryComparison[] = result?.inventoryComparison || [];
+  const canFullyFulfill = comparison.length > 0 && comparison.every((c) => c.canFulfill);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -85,7 +140,7 @@ export default function CsvUploadPage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
 
-        {/* ── Upload card — drop zone only ── */}
+        {/* ── Upload card ── */}
         <Card className="border-border">
           <CardHeader>
             <CardTitle>Upload CSV</CardTitle>
@@ -155,6 +210,7 @@ export default function CsvUploadPage() {
                 { code: "810", label: "Invoice" },
                 { code: "204", label: "Load Tender" },
                 { code: "990", label: "Response to Load Tender" },
+                { code: "861", label: "Receiving Advice" },
               ].map((t) => (
                 <a
                   key={t.code}
@@ -180,11 +236,15 @@ export default function CsvUploadPage() {
               <div>
                 <CardTitle className="flex items-center gap-2">
                   <FileText className="h-5 w-5" />
-                  Processing Result
+                  {isPending850 ? "Purchase Order Review" : "Processing Result"}
                 </CardTitle>
-                <CardDescription className="mt-1">ANSI X12 validation and EDI routing outcome</CardDescription>
+                <CardDescription className="mt-1">
+                  {isPending850
+                    ? "Review inventory impact before accepting"
+                    : "ANSI X12 validation and EDI routing outcome"}
+                </CardDescription>
               </div>
-              {result?.success && (
+              {result?.success && !isPending850 && (
                 <div className="flex items-center gap-1 bg-secondary rounded-lg p-1">
                   <button
                     onClick={() => setResultView("json")}
@@ -195,8 +255,7 @@ export default function CsvUploadPage() {
                         : "text-muted-foreground hover:text-foreground",
                     ].join(" ")}
                   >
-                    <Braces className="h-3.5 w-3.5" />
-                    JSON
+                    <Braces className="h-3.5 w-3.5" /> JSON
                   </button>
                   <button
                     onClick={() => setResultView("edi")}
@@ -207,8 +266,7 @@ export default function CsvUploadPage() {
                         : "text-muted-foreground hover:text-foreground",
                     ].join(" ")}
                   >
-                    <FileCode2 className="h-3.5 w-3.5" />
-                    Raw EDI
+                    <FileCode2 className="h-3.5 w-3.5" /> Raw EDI
                   </button>
                 </div>
               )}
@@ -220,9 +278,127 @@ export default function CsvUploadPage() {
                 <FileUp className="h-8 w-8 opacity-30" />
                 <p className="text-sm">Upload a CSV to see the result</p>
               </div>
-            ) : (
-              <div className="space-y-4">
 
+            ) : isPending850 ? (
+              /* ── 850 Pending Acceptance View ── */
+              <div className="space-y-4">
+                {/* Partner + PO info */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge variant="outline" className="font-mono font-semibold">850</Badge>
+                  <span className="text-sm text-muted-foreground">Purchase Order from</span>
+                  <span className="text-sm font-semibold">{result.partnerName}</span>
+                  <Badge variant="outline" className="ml-auto text-xs">
+                    {result.csvRowsProcessed} line{result.csvRowsProcessed !== 1 ? "s" : ""}
+                  </Badge>
+                </div>
+
+                {/* Acceptance outcome (after accept) */}
+                {accepted && acceptDetails && (
+                  <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 space-y-2">
+                    <p className="font-semibold text-emerald-800 flex items-center gap-2">
+                      <PackageCheck className="h-5 w-5" /> Purchase Order Accepted
+                    </p>
+                    <p className="text-sm text-emerald-700">{acceptDetails.message}</p>
+                    <div className="flex gap-3 text-xs font-mono text-emerald-700 flex-wrap">
+                      <span>Invoice: {acceptDetails.invoiceNumber}</span>
+                      <span>Total: ${Number(acceptDetails.totalAmount || 0).toFixed(2)}</span>
+                    </div>
+                    <p className="text-xs text-emerald-600 mt-1">
+                      EDI 855 (Acknowledgment) + EDI 810 (Invoice) sent to {acceptDetails.partnerName}.
+                      Inventory updated.
+                    </p>
+                  </div>
+                )}
+
+                {/* Inventory comparison table */}
+                {comparison.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <TrendingDown className="h-4 w-4 text-muted-foreground" />
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Inventory Impact
+                      </p>
+                      {canFullyFulfill ? (
+                        <Badge variant="outline" className="ml-auto text-emerald-700 border-emerald-400/60 bg-emerald-50 text-xs">
+                          Can Fully Fulfill
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="ml-auto text-destructive border-destructive/50 bg-destructive/5 text-xs">
+                          Stock Insufficient
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="border border-border rounded-md overflow-hidden">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="bg-secondary/40 border-b border-border">
+                            <th className="text-left px-3 py-2 font-semibold text-muted-foreground">Product</th>
+                            <th className="text-right px-3 py-2 font-semibold text-muted-foreground">Ordered</th>
+                            <th className="text-right px-3 py-2 font-semibold text-muted-foreground">Before</th>
+                            <th className="text-right px-3 py-2 font-semibold text-muted-foreground">After</th>
+                            <th className="text-center px-3 py-2 font-semibold text-muted-foreground">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border/60">
+                          {comparison.map((row) => (
+                            <tr key={row.productId} className={row.canFulfill ? "" : "bg-destructive/5"}>
+                              <td className="px-3 py-2">
+                                <p className="font-medium text-foreground">{row.description}</p>
+                                <p className="font-mono text-muted-foreground">{row.productId}</p>
+                              </td>
+                              <td className="px-3 py-2 text-right font-mono font-semibold">
+                                {row.orderedQty} <span className="text-muted-foreground">{row.uom}</span>
+                              </td>
+                              <td className="px-3 py-2 text-right font-mono text-muted-foreground">
+                                {row.beforeAvailable}
+                              </td>
+                              <td className={`px-3 py-2 text-right font-mono font-bold ${row.canFulfill ? "text-primary" : "text-destructive"}`}>
+                                {row.afterAvailable}
+                              </td>
+                              <td className="px-3 py-2 text-center">
+                                {row.canFulfill ? (
+                                  <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
+                                    <CheckCircle2 className="h-3.5 w-3.5" /> OK
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-destructive font-medium">
+                                    <AlertTriangle className="h-3.5 w-3.5" /> Low
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {!canFullyFulfill && (
+                      <p className="text-xs text-destructive flex items-center gap-1.5">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                        Some items exceed current available stock. You can still accept — inventory will go negative.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Accept button */}
+                {!accepted && (
+                  <Button
+                    className="w-full gap-2"
+                    disabled={isAccepting}
+                    onClick={handleAccept}
+                  >
+                    {isAccepting ? (
+                      <><Loader2 className="h-4 w-4 animate-spin" /> Accepting…</>
+                    ) : (
+                      <><ClipboardCheck className="h-4 w-4" /> Accept Purchase Order</>
+                    )}
+                  </Button>
+                )}
+              </div>
+
+            ) : (
+              /* ── Standard result view ── */
+              <div className="space-y-4">
                 {/* Status banner */}
                 <div className={[
                   "flex items-start gap-3 rounded-lg p-4 border",
@@ -244,7 +420,6 @@ export default function CsvUploadPage() {
                   </div>
                 </div>
 
-                {/* Detected type pill — shown on success */}
                 {result.success && (
                   <div className="flex items-center gap-2">
                     <Badge variant="outline" className="font-mono font-semibold">
@@ -257,7 +432,6 @@ export default function CsvUploadPage() {
                   </div>
                 )}
 
-                {/* Validation errors */}
                 {result.errors && result.errors.length > 0 && (
                   <div className="space-y-2">
                     <p className="text-xs font-semibold uppercase tracking-wide text-destructive flex items-center gap-1">
@@ -265,15 +439,12 @@ export default function CsvUploadPage() {
                     </p>
                     <ul className="space-y-1">
                       {result.errors.map((e: string, i: number) => (
-                        <li key={i} className="text-xs text-destructive bg-destructive/5 rounded px-3 py-1.5">
-                          {e}
-                        </li>
+                        <li key={i} className="text-xs text-destructive bg-destructive/5 rounded px-3 py-1.5">{e}</li>
                       ))}
                     </ul>
                   </div>
                 )}
 
-                {/* JSON view — full parsed EDI as JSON */}
                 {result.success && resultView === "json" && result.parsedEdiJson && (
                   <div className="space-y-1.5">
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -285,7 +456,6 @@ export default function CsvUploadPage() {
                   </div>
                 )}
 
-                {/* Raw EDI view */}
                 {result.success && resultView === "edi" && (
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
