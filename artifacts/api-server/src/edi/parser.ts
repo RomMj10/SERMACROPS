@@ -151,7 +151,8 @@ function build850Summary(segments: EdiSegment[]): Record<string, unknown> {
     unitPrice: parseFloat(seg.elements[3] || "0"),
     basisCode: seg.elements[4] || "PE",
     productId: seg.elements[6] || "",
-    description: seg.elements[7] || "",
+    // elements[7] is the product ID qualifier (e.g. "PI"), elements[8] is the actual description
+    description: seg.elements[8] || seg.elements[6] || "",
   }));
 
   const totalAmount = lineItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);

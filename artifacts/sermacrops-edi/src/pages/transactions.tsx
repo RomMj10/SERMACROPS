@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowDownLeft, ArrowUpRight, CheckCircle2, Play } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, CheckCircle2, Download, Play } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const EDI_TYPES: Record<string, string> = {
@@ -32,6 +32,22 @@ export default function TransactionsPage() {
   });
 
   const processMutation = useProcessTransaction();
+
+  const handleDownloadCsv = async (id: string, type: string, cn: string) => {
+    try {
+      const res = await fetch(`/api/transactions/${id}/csv`);
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `EDI${type}_${cn || id}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast({ title: "Download Failed", description: "Could not download CSV for this transaction.", variant: "destructive" });
+    }
+  };
 
   const handleProcess = (id: number) => {
     processMutation.mutate({ id }, {
@@ -167,20 +183,31 @@ export default function TransactionsPage() {
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">
-                    {tx.status === "pending" ? (
-                      <Button 
-                        size="sm" 
-                        variant="secondary"
-                        className="opacity-0 group-hover:opacity-100 transition-opacity bg-primary/20 text-primary hover:bg-primary/30"
-                        onClick={() => handleProcess(tx.id)}
-                        disabled={processMutation.isPending}
+                    <div className="flex items-center justify-end gap-2">
+                      {tx.status === "pending" ? (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="opacity-0 group-hover:opacity-100 transition-opacity bg-primary/20 text-primary hover:bg-primary/30"
+                          onClick={() => handleProcess(tx.id)}
+                          disabled={processMutation.isPending}
+                        >
+                          <Play className="h-3 w-3 mr-2" />
+                          Process
+                        </Button>
+                      ) : tx.status === "processed" || tx.status === "acknowledged" ? (
+                        <CheckCircle2 className="h-5 w-5 text-muted-foreground/30" />
+                      ) : null}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
+                        title="Download as CSV"
+                        onClick={() => handleDownloadCsv(String(tx.id), tx.transactionType, String(tx.controlNumber || ""))}
                       >
-                        <Play className="h-3 w-3 mr-2" />
-                        Process
+                        <Download className="h-3.5 w-3.5" />
                       </Button>
-                    ) : tx.status === "processed" || tx.status === "acknowledged" ? (
-                       <CheckCircle2 className="h-5 w-5 text-muted-foreground/30 inline-block mr-4" />
-                    ) : null}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))
